@@ -10,6 +10,9 @@ jobs:
   build:
     name: Build & Test (Java ${{ matrix.java }})
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write   # required for OIDC upload to Codecov
+      contents: read
 
     strategy:
       matrix:
@@ -35,5 +38,6 @@ jobs:
         if: matrix.java == '21'
         uses: codecov/codecov-action@v7
         with:
+          use_oidc: true
           files: gwtmockito/target/site/jacoco/jacoco.xml
-          fail_ci_if_error: false
+          fail_ci_if_error: true
