@@ -135,6 +135,13 @@ public class GwtMockito {
    *              always "this" in unit tests
    */
   public static void initMocks(Object owner) {
+    // If a session is already open (e.g. a runner-managed test that calls initMocks
+    // again manually), close it now so the old AutoCloseable is not overwritten and
+    // leaked. tearDown() is idempotent and also resets the bridge.
+    if (openMocksCloseable != null) {
+      tearDown();
+    }
+
     // Create a new bridge and register built-in type providers
     bridge = new Bridge();
     for (Entry<Class<?>, FakeProvider<?>> entry : DEFAULT_FAKE_PROVIDERS.entrySet()) {
