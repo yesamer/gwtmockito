@@ -30,8 +30,14 @@ import org.mockito.Mock;
  * <p>When {@link org.mockito.MockitoAnnotations#openMocks(Object)} completes without throwing
  * (no GWT base-class ambiguity), GwtMockito still calls {@code injectIntoAllTargets()} to
  * fill any fields that Mockito 5 may have skipped because constructor injection short-circuited
- * property/setter injection.  This test has a single plain (non-GWT-base) {@code @InjectMocks}
- * target with one uniquely-named collaborator to confirm that field is populated.
+ * property/setter injection.
+ *
+ * <p>{@code PlainView} exposes a {@code String}-taking constructor that Mockito's constructor
+ * strategy selects (it is the only constructor with a matching mock type — there is none, so
+ * Mockito falls back to the no-arg path, but the {@code collaborator} field is left null after
+ * constructor injection, forcing the success-path {@code injectIntoAllTargets} fallback to fill
+ * it).  A plain no-arg constructor would allow Mockito's own property injection to set the field
+ * directly, making the fallback invisible to the assertion.
  */
 @RunWith(GwtMockitoTestRunner.class)
 public class GwtMockitoSuccessPathInjectionTest {
@@ -41,9 +47,15 @@ public class GwtMockitoSuccessPathInjectionTest {
     void doWork();
   }
 
-  /** Simple target with one collaborator field, injected by name. */
+  /**
+   * Target whose explicit constructor causes Mockito 5 to attempt constructor injection
+   * first.  The constructor takes a {@code String} for which no mock exists, so Mockito
+   * falls back to the no-arg path and leaves {@code collaborator} null, requiring
+   * GwtMockito's success-path {@code injectIntoAllTargets} fallback to populate it.
+   */
   static class PlainView {
     Collaborator collaborator;
+    PlainView(String ignored) {}
   }
 
   /** The sole mock — unique type, unique name, so injection is unambiguous. */
