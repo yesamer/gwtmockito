@@ -425,10 +425,15 @@ public class GwtMockito {
             if (args[i] instanceof Class) {
               return (Class<?>) args[i];
             }
-            // The slot is itself a TypeVariable — recurse with the child's context.
+            // The slot is itself a TypeVariable — the binding is propagated from a
+            // subclass (e.g. Middle<P> extends Base<P> where P is still unresolved).
+            // Recurse with the original concreteClass so the full hierarchy is
+            // available to resolve the forwarded type variable.  Using child here
+            // would start the walk at Middle and miss the binding supplied by
+            // Concrete extends Middle<MyPresenter>.
             if (args[i] instanceof java.lang.reflect.TypeVariable) {
               return resolveTypeVariable(
-                  (java.lang.reflect.TypeVariable<?>) args[i], child);
+                  (java.lang.reflect.TypeVariable<?>) args[i], concreteClass);
             }
             return null; // wildcard or parameterized type — not injectable
           }
