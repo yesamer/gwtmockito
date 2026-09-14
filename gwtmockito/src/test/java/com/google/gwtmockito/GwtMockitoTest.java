@@ -79,14 +79,12 @@ import com.google.gwt.user.client.ui.Widget;
 import com.google.gwt.user.datepicker.client.DatePicker;
 import com.google.gwtmockito.fakes.FakeProvider;
 
-import org.hamcrest.BaseMatcher;
 import org.hamcrest.CoreMatchers;
-import org.hamcrest.Description;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
-import org.mockito.Matchers;
+import org.mockito.ArgumentMatchers;
 import org.mockito.Mock;
 
 import java.util.Date;
@@ -357,17 +355,8 @@ public class GwtMockitoTest {
   @Test
   public void shouldAllowArgumentMatchers() throws Exception {
     element.setClassName("classname");
-    verify(element).setClassName(Matchers.argThat(new BaseMatcher<String>() {
-      @Override
-      public boolean matches(Object item) {
-        return item.toString().equals("classname");
-      }
-
-      @Override
-      public void describeTo(Description description) {
-        description.appendText("fake matcher");
-      }
-    }));
+    verify(element).setClassName(ArgumentMatchers.argThat(
+        item -> item.toString().equals("classname")));
   }
 
   /**

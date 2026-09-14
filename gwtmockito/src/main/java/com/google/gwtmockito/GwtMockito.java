@@ -12,6 +12,8 @@
  * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
  * License for the specific language governing permissions and limitations under
  * the License.
+ *
+ * Modifications copyright (C) 2026 YCM
  */
 package com.google.gwtmockito;
 
@@ -38,6 +40,7 @@ import com.google.gwtmockito.impl.ReturnsCustomMocks;
 import org.mockito.Mockito;
 import org.mockito.MockitoAnnotations;
 
+import java.lang.annotation.Annotation;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
@@ -93,6 +96,17 @@ import java.util.Set;
  */
 public class GwtMockito {
 
+  /**
+   * Package prefixes of GWT base classes whose private fields may cause Mockito 5's ambiguity
+   * error. Recovery (placeholder injection) is restricted to fields declared on classes within
+   * these packages so that ambiguity errors from user-defined classes are still rethrown.
+   */
+  private static final java.util.Set<String> GWT_BASE_PACKAGES = new java.util.HashSet<>(
+      java.util.Arrays.asList(
+          "com.google.gwt.",
+          "org.gwtproject."
+      ));
+
   private static final Map<Class<?>, FakeProvider<?>> DEFAULT_FAKE_PROVIDERS =
       new HashMap<Class<?>, FakeProvider<?>>();
   static {
@@ -107,6 +121,7 @@ public class GwtMockito {
   }
 
   private static Bridge bridge;
+  private static AutoCloseable openMocksCloseable;
 
   /**
    * Causes all calls to GWT.create to be intercepted to return a mock or fake
@@ -131,13 +146,259 @@ public class GwtMockito {
     try {
       setGwtBridge(bridge);
       registerGwtMocks(owner);
-      MockitoAnnotations.initMocks(owner);
+      openMocksCloseable = openMocksWithObjectFieldFix(owner);
       success = true;
     } finally {
       if (!success) {
         tearDown();
       }
     }
+  }
+
+  /**
+   * Calls {@link MockitoAnnotations#openMocks(Object)} and, if it fails because
+   * Mockito 5's {@code TypeBasedCandidateFilter} throws {@code moreThanOneMockCandidate}
+   * for a private field inherited from a GWT base class (e.g. {@code Widget.layoutData},
+   * {@code Composite.widget}), completes the injection manually and returns a
+   * proper {@code AutoCloseable} via a second session limited to {@code @Mock}
+   * creation only (no {@code @InjectMocks} processing).
+   *
+   * <p>Background: Mockito 3 silently skipped fields with multiple type-compatible
+   * candidates. Mockito 5 throws instead. GWT base classes ({@code Widget},
+   * {@code Composite}) carry private fields typed {@code Object} or {@code Widget}
+   * that match every test mock. This fix restores the Mockito 3 behavior: inject
+   * uniquely-named mocks where possible, and fill ambiguous GWT-internal fields
+   * with a fresh placeholder mock.
+   *
+   * <p>The fix is applied only when the exception message contains
+   * {@code "there were multiple matching mocks"}, so all other
+   * {@code MockitoException}s are rethrown unchanged.
+   */
+  private static AutoCloseable openMocksWithObjectFieldFix(Object owner) {
+    try {
+      AutoCloseable closeable = MockitoAnnotations.openMocks(owner);
+      // Mockito 5 short-circuits after constructor injection and never runs
+      // property/setter injection. Fill any still-null fields on @InjectMocks
+      // targets from the owner's mocks (same logic used in the catch branch).
+      // Skip the scan entirely when the owner has no @InjectMocks field — the
+      // common case for tests that only use @Mock — to avoid unnecessary
+      // reflective hierarchy walks on every test.
+      if (hasInjectMocksField(owner)) {
+        injectIntoAllTargets(owner, collectOwnerMocks(owner));
+      }
+      return closeable;
+    } catch (org.mockito.exceptions.base.MockitoException firstException) {
+      if (!firstException.getMessage().contains("there were multiple matching mocks")) {
+        throw firstException;
+      }
+      // Additional guard: only recover when at least one @InjectMocks target actually extends
+      // a GWT base class. If the ambiguity comes from a plain user class (no GWT base class
+      // in the hierarchy) the exception is a real misconfiguration — rethrow it.
+      if (!hasInjectMocksTargetExtendingGwtBase(owner)) {
+        throw firstException;
+      }
+
+      // At this point:
+      // - All @Mock fields on the owner ARE set (IndependentAnnotationEngine ran first).
+      // - @InjectMocks targets were created and assigned (FieldInitializer ran before
+      //   PropertyAndSetterInjection threw).
+      // - Only the property-injection step failed due to ambiguous inherited GWT fields.
+      //
+      // Step 1: collect the owner's mocks (already created by the failed openMocks call).
+      java.util.Map<String, Object> ownerMocks = collectOwnerMocks(owner);
+
+      // Step 2: for each @InjectMocks target, perform injection:
+      //   - unique-by-type-and-name  →  inject the matching owner mock
+      //   - ambiguous (multiple type-compatible mocks, GWT internal field)  →  fresh placeholder
+      injectIntoAllTargets(owner, ownerMocks);
+
+      // Step 3: the mocks created by the failed openMocks() call are already registered with
+      // Mockito's internal state and do not require a separate session to be tracked. The runner
+      // calls GwtMockito.tearDown() after each test (via withAfters), which closes the
+      // openMocksCloseable and resets the bridge. Since openMocks() threw (no session opened),
+      // we return a no-op AutoCloseable — there is nothing to close for this invocation.
+      return () -> {};
+    }
+  }
+
+  /**
+   * Collects all mock objects from {@code @Mock}- and {@code @GwtMock}-annotated
+   * fields in the owner's class hierarchy, keyed by field name.
+   */
+  private static java.util.Map<String, Object> collectOwnerMocks(Object owner) {
+    java.util.Map<String, Object> mocks = new java.util.LinkedHashMap<>();
+    Class<?> clazz = owner.getClass();
+    while (clazz != null && clazz != Object.class) {
+      for (Field f : clazz.getDeclaredFields()) {
+        if (hasAnnotation(f, "org.mockito.Mock") || hasAnnotation(f, "com.google.gwtmockito.GwtMock")) {
+          f.setAccessible(true);
+          try {
+            Object mock = f.get(owner);
+            if (mock != null) {
+              mocks.putIfAbsent(f.getName(), mock); // subclass fields take priority over superclass
+            }
+          } catch (IllegalAccessException ignored) {}
+        }
+      }
+      clazz = clazz.getSuperclass();
+    }
+    return mocks;
+  }
+
+  /**
+   * Scans all {@code @InjectMocks}-annotated fields on the owner's class hierarchy.
+   * For each target that already exists, injects owner mocks into the target's null
+   * fields using name-then-type disambiguation, and fills any still-ambiguous fields
+   * (typically private GWT base-class fields) with a fresh placeholder mock.
+   */
+  private static void injectIntoAllTargets(Object owner,
+      java.util.Map<String, Object> ownerMocks) {
+    Class<?> clazz = owner.getClass();
+    while (clazz != null && clazz != Object.class) {
+      for (Field f : clazz.getDeclaredFields()) {
+        if (hasAnnotation(f, "org.mockito.InjectMocks")) {
+          f.setAccessible(true);
+          Object target;
+          try {
+            target = f.get(owner);
+          } catch (IllegalAccessException ex) {
+            continue;
+          }
+          if (target == null) continue;
+          injectMocksIntoTarget(target, ownerMocks);
+        }
+      }
+      clazz = clazz.getSuperclass();
+    }
+  }
+
+  /**
+   * Injects {@code ownerMocks} into null instance fields of {@code target}'s full
+   * class hierarchy using the same priority as Mockito's own injector:
+   * <ol>
+   *   <li>Name match beats type match: if a mock named identically to the field
+   *       exists and is type-compatible, use it.</li>
+   *   <li>Unique type match: if exactly one mock is type-compatible, use it.</li>
+   *   <li>Ambiguous (multiple type-compatible, no name match): fill with a fresh
+   *       placeholder mock so the target is never left with a null GWT-internal
+   *       field that would cause a {@code NullPointerException} at test time.</li>
+   * </ol>
+   * Fields that already have a non-null value are left untouched.
+   */
+  private static void injectMocksIntoTarget(Object target,
+      java.util.Map<String, Object> ownerMocks) {
+    Class<?> clazz = target.getClass();
+    while (clazz != null && clazz != Object.class) {
+      for (Field f : clazz.getDeclaredFields()) {
+        if (java.lang.reflect.Modifier.isStatic(f.getModifiers())) continue;
+        f.setAccessible(true);
+        try {
+          if (f.get(target) != null) continue; // already set — leave untouched
+
+          // When the field is declared with a generic type parameter (e.g. "protected P
+          // presenter"), f.getType() returns the erasure Object.class, which matches every
+          // mock and causes incorrect ambiguous-placeholder injection. Resolve the type
+          // variable to its concrete bound in this target's class hierarchy first.
+          Class<?> effectiveType = f.getType();
+          java.lang.reflect.Type genericType = f.getGenericType();
+          if (genericType instanceof java.lang.reflect.TypeVariable) {
+            Class<?> resolved = resolveTypeVariable(
+                (java.lang.reflect.TypeVariable<?>) genericType, target.getClass());
+            if (resolved != null) {
+              effectiveType = resolved;
+            }
+          }
+
+          // Priority 1: name+type match (mirrors Mockito's NameBasedCandidateFilter).
+          Object byName = ownerMocks.get(f.getName());
+          if (byName != null && effectiveType.isInstance(byName)) {
+            f.set(target, byName);
+            continue;
+          }
+
+          // Priority 2: unique type match (mirrors TypeBasedCandidateFilter).
+          java.util.List<Object> compatible = new java.util.ArrayList<>();
+          for (Object mock : ownerMocks.values()) {
+            if (effectiveType.isInstance(mock)) {
+              compatible.add(mock);
+            }
+          }
+          if (compatible.size() == 1) {
+            f.set(target, compatible.get(0));
+          } else if (compatible.size() > 1) {
+            // Ambiguous: no owner mock resolves uniquely.
+            // Only fill with a placeholder if this field is declared on a GWT base class
+            // (e.g. Composite.widget, Widget.layoutData). For fields on user-defined classes,
+            // leave null so the ambiguity surfaces rather than being silently masked.
+            if (isGwtBaseClass(clazz)) {
+              f.set(target, Mockito.mock(effectiveType));
+            }
+          }
+          // compatible.size() == 0 → no mock applies; leave null.
+        } catch (IllegalAccessException | org.mockito.exceptions.base.MockitoException ignored) {}
+      }
+      clazz = clazz.getSuperclass();
+    }
+  }
+
+  /**
+   * Resolves a {@link java.lang.reflect.TypeVariable} to its concrete {@link Class} by walking
+   * the generic superclass chain of {@code concreteClass}.
+   *
+   * <p>Example: given {@code protected P presenter} declared in
+   * {@code AbstractWorkbenchPanelView<P>} and a concrete class
+   * {@code MultiListWorkbenchPanelView extends AbstractMultiPartWorkbenchPanelView<MultiListWorkbenchPanelPresenter>},
+   * this method returns {@code MultiListWorkbenchPanelPresenter.class}.
+   *
+   * @param tv            the type variable to resolve
+   * @param concreteClass the runtime class of the injection target
+   * @return the resolved {@link Class}, or {@code null} if resolution is not possible
+   */
+  private static Class<?> resolveTypeVariable(
+      java.lang.reflect.TypeVariable<?> tv, Class<?> concreteClass) {
+    // The generic declaration is the class/interface that introduced this type parameter.
+    // We only handle class-level type variables (not method-level ones).
+    if (!(tv.getGenericDeclaration() instanceof Class)) {
+      return null;
+    }
+    Class<?> declaringClass = (Class<?>) tv.getGenericDeclaration();
+
+    // Walk up the superclass chain from concreteClass until we find a ParameterizedType
+    // whose raw type is the class immediately below declaringClass in the hierarchy.
+    // At that point the actual type arguments tell us what declaringClass's parameters
+    // are bound to.
+    Class<?> child = concreteClass;
+    while (child != null && child != Object.class) {
+      java.lang.reflect.Type genericSuper = child.getGenericSuperclass();
+      if (!(genericSuper instanceof java.lang.reflect.ParameterizedType)) {
+        child = child.getSuperclass();
+        continue;
+      }
+      java.lang.reflect.ParameterizedType pt = (java.lang.reflect.ParameterizedType) genericSuper;
+      Class<?> rawSuper = (Class<?>) pt.getRawType();
+
+      if (rawSuper.equals(declaringClass)) {
+        // Found the parameterized supertype that directly binds declaringClass's parameters.
+        java.lang.reflect.TypeVariable<?>[] params = declaringClass.getTypeParameters();
+        java.lang.reflect.Type[] args = pt.getActualTypeArguments();
+        for (int i = 0; i < params.length; i++) {
+          if (params[i].equals(tv)) { // object equality: compares both name and declaring class
+            if (args[i] instanceof Class) {
+              return (Class<?>) args[i];
+            }
+            // The slot is itself a TypeVariable — recurse with the child's context.
+            if (args[i] instanceof java.lang.reflect.TypeVariable) {
+              return resolveTypeVariable(
+                  (java.lang.reflect.TypeVariable<?>) args[i], child);
+            }
+            return null; // wildcard or parameterized type — not injectable
+          }
+        }
+        return null;
+      }
+      child = child.getSuperclass();
+    }
+    return null;
   }
 
   /**
@@ -148,6 +409,15 @@ public class GwtMockito {
    */
   public static void tearDown() {
     setGwtBridge(null);
+    if (openMocksCloseable != null) {
+      try {
+        openMocksCloseable.close();
+      } catch (Exception e) {
+        throw new RuntimeException("Failed to close Mockito mocks", e);
+      } finally {
+        openMocksCloseable = null;
+      }
+    }
   }
 
   /**
@@ -192,6 +462,58 @@ public class GwtMockito {
           + "register a provider before calling getFake.");
     }
     return fake;
+  }
+
+  /** Returns true when {@code clazz} is a GWT framework class (not user code). */
+  private static boolean isGwtBaseClass(Class<?> clazz) {
+    String name = clazz.getName();
+    for (String prefix : GWT_BASE_PACKAGES) {
+      if (name.startsWith(prefix)) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Returns true when at least one {@code @InjectMocks} field on {@code owner}'s class hierarchy
+   * has a target type that extends a GWT base class. Used to distinguish GWT-specific ambiguity
+   * (recoverable) from user-code ambiguity (should rethrow).
+   */
+  private static boolean hasInjectMocksTargetExtendingGwtBase(Object owner) {
+    Class<?> clazz = owner.getClass();
+    while (clazz != null && clazz != Object.class) {
+      for (Field f : clazz.getDeclaredFields()) {
+        if (hasAnnotation(f, "org.mockito.InjectMocks")) {
+          Class<?> targetType = f.getType();
+          while (targetType != null && targetType != Object.class) {
+            if (isGwtBaseClass(targetType)) return true;
+            targetType = targetType.getSuperclass();
+          }
+        }
+      }
+      clazz = clazz.getSuperclass();
+    }
+    return false;
+  }
+
+  private static boolean hasAnnotation(Field field, String annotationClassName) {
+    for (Annotation a : field.getAnnotations()) {
+      if (a.annotationType().getName().equals(annotationClassName)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** Returns true when any field in {@code owner}'s class hierarchy carries {@code @InjectMocks}. */
+  private static boolean hasInjectMocksField(Object owner) {
+    Class<?> clazz = owner.getClass();
+    while (clazz != null && clazz != Object.class) {
+      for (Field f : clazz.getDeclaredFields()) {
+        if (hasAnnotation(f, "org.mockito.InjectMocks")) return true;
+      }
+      clazz = clazz.getSuperclass();
+    }
+    return false;
   }
 
   private static void registerGwtMocks(Object owner) {
