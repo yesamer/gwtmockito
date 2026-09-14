@@ -25,7 +25,6 @@ import org.junit.runner.JUnitCore;
 import org.junit.runner.Result;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
-import org.mockito.InjectMocks;
 import org.mockito.Mock;
 
 /**
@@ -136,65 +135,69 @@ public class GwtMockitoWithAftersTest {
   // -------------------------------------------------------------------------
   // Path 2: collectOwnerMocks putIfAbsent — when a subclass and a superclass
   // both declare an @Mock field with the same name, the subclass instance must
-  // be used for injection (Mockito's own name-priority).
+  // be returned by collectOwnerMocks (subclass-first walk).
   //
-  // Strategy: run a fake inner test class through JUnitCore and assert it
-  // passes cleanly.  The inner test injects into a target whose field name
-  // matches only the subclass mock; if the superclass mock were used instead
-  // the assertSame inside the inner test would fail.
+  // Both Base2 and Concrete2 declare "@Mock NamedCollaborator collab" — the
+  // same field name.  Mockito assigns distinct mock instances to each.
+  // collectOwnerMocks must return the Concrete2 instance (putIfAbsent keeps
+  // the first entry seen; the walk is subclass → superclass).
+  // If plain put() were used the superclass instance would overwrite the
+  // subclass one and the assertSame below would fail.
   // -------------------------------------------------------------------------
 
-  /** Unique type so name-based injection is unambiguous even across classloaders. */
+  /** Unique type so name-based disambiguation is unambiguous. */
   interface NamedCollaborator {
     void act();
   }
 
-  /** View target with one field named {@code namedCollab}. */
-  static class TargetView {
-    NamedCollaborator namedCollab;
+  /** Base class with a same-named @Mock field. */
+  public static abstract class Base2 {
+    @Mock NamedCollaborator collab;
   }
 
   /**
-   * Base class declaring a {@code @Mock} field named {@code baseCollab} — a different name from
-   * the subclass field so that Mockito does not raise its own "multiple fields of same type"
-   * error. The subclass field named {@code namedCollab} must win when injecting into TargetView
-   * because collectOwnerMocks uses putIfAbsent (subclass-first walk).
+   * Subclass with a same-named @Mock field. Mockito creates separate mock instances
+   * for each. collectOwnerMocks must return the subclass instance.
    */
-  @RunWith(GwtMockitoTestRunner.class)
-  public static abstract class BaseWithMock {
-    /** Different name — ensures Mockito does not confuse this with the subclass mock. */
-    @Mock NamedCollaborator baseCollab;
+  public static class Concrete2 extends Base2 {
+    @Mock NamedCollaborator collab;
   }
 
-  /**
-   * Subclass that declares its own mock for the same type with the name that matches
-   * {@code TargetView.namedCollab}. collectOwnerMocks must put this entry first (putIfAbsent),
-   * so injection into TargetView uses this instance rather than the superclass one.
-   */
-  @RunWith(GwtMockitoTestRunner.class)
-  public static class ConcreteWithMock extends BaseWithMock {
-    /** Name matches TargetView.namedCollab — this instance must be injected. */
-    @Mock NamedCollaborator namedCollab;
-
-    @InjectMocks TargetView targetView;
-
-    @Test
-    public void subclassMockIsUsedForInjection() {
-      // collectOwnerMocks walks subclass → superclass with putIfAbsent.
-      // "namedCollab" from ConcreteWithMock is seen first and wins.
-      // TargetView.namedCollab must be the subclass instance, not baseCollab.
-      assertNotNull("targetView must not be null", targetView);
-      assertSame("subclass namedCollab must be injected", namedCollab, targetView.namedCollab);
-    }
+  @SuppressWarnings("unchecked")
+  private static java.util.Map<String, Object> collectOwnerMocks(Object owner) throws Exception {
+    java.lang.reflect.Method m =
+        GwtMockito.class.getDeclaredMethod("collectOwnerMocks", Object.class);
+    m.setAccessible(true);
+    return (java.util.Map<String, Object>) m.invoke(null, owner);
   }
 
   @Test
-  public void subclassMockTakesPriorityOverSameNamedSuperclassMock() {
-    // If collectOwnerMocks used plain put() instead of putIfAbsent(), the
-    // superclass mock would overwrite the subclass entry in the map and the
-    // inner test's assertSame would fail.
-    Result result = JUnitCore.runClasses(ConcreteWithMock.class);
-    assertEquals("Inner test must pass: subclass mock must win over superclass mock",
-        0, result.getFailureCount());
+  public void subclassMockTakesPriorityOverSameNamedSuperclassMock() throws Exception {
+    // Populate both @Mock fields with distinct instances via MockitoAnnotations so
+    // the test does not depend on GwtMockito's classloader.
+    Concrete2 owner = new Concrete2();
+    AutoCloseable cl = org.mockito.MockitoAnnotations.openMocks(owner);
+
+    // Capture the two distinct mock instances assigned by Mockito.
+    java.lang.reflect.Field childField = Concrete2.class.getDeclaredField("collab");
+    childField.setAccessible(true);
+    NamedCollaborator childMock = (NamedCollaborator) childField.get(owner);
+
+    java.lang.reflect.Field parentField = Base2.class.getDeclaredField("collab");
+    parentField.setAccessible(true);
+    NamedCollaborator parentMock = (NamedCollaborator) parentField.get(owner);
+
+    // Sanity: Mockito must have created two different instances.
+    assertNotNull("child mock must be non-null", childMock);
+    assertNotNull("parent mock must be non-null", parentMock);
+    assertTrue("child and parent mocks must be distinct instances", childMock != parentMock);
+
+    // collectOwnerMocks must return the subclass (child) instance for key "collab".
+    java.util.Map<String, Object> collected = collectOwnerMocks(owner);
+    assertSame(
+        "collectOwnerMocks must return the subclass mock (putIfAbsent, subclass-first walk)",
+        childMock, collected.get("collab"));
+
+    cl.close();
   }
 }
