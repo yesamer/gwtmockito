@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    name: Build & Test (Java ${{ matrix.java }})
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        java: [ '17', '21', '25' ]
+      fail-fast: false
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Java ${{ matrix.java }}
+        uses: actions/setup-java@v6
+        with:
+          java-version: ${{ matrix.java }}
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Build and test
+        run: mvn verify --batch-mode --no-transfer-progress
+
+      - name: Upload coverage to Codecov
+        # Only upload once — use the Java 21 job to avoid triple-uploading.
+        if: matrix.java == '21'
+        uses: codecov/codecov-action@v7
+        with:
+          files: gwtmockito/target/site/jacoco/jacoco.xml
+          fail_ci_if_error: false
