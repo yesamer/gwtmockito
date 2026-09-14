@@ -191,7 +191,7 @@ public class GwtMockito {
       // common case for tests that only use @Mock — to avoid unnecessary
       // reflective hierarchy walks on every test.
       if (hasInjectMocksField(owner)) {
-        injectIntoAllTargets(owner, collectOwnerMocks(owner));
+        injectIntoAllTargets(owner, collectOwnerMocks(owner), false);
       }
       return closeable;
     } catch (org.mockito.exceptions.base.MockitoException firstException) {
@@ -217,7 +217,7 @@ public class GwtMockito {
       // Step 2: for each @InjectMocks target, perform injection:
       //   - unique-by-type-and-name  →  inject the matching owner mock
       //   - ambiguous (multiple type-compatible mocks, GWT internal field)  →  fresh placeholder
-      injectIntoAllTargets(owner, ownerMocks);
+      injectIntoAllTargets(owner, ownerMocks, true);
 
       // Step 3: IndependentAnnotationEngine already set every @Mock/@GwtMock field on the owner
       // before the injection step threw. Any @MockedStatic or @MockedConstruction instances
@@ -290,17 +290,15 @@ public class GwtMockito {
    * disambiguation, and fills any still-ambiguous fields (typically private GWT
    * base-class fields) with a fresh placeholder mock.
    *
-   * <p>When called from the <em>catch path</em> (after {@code openMocks()} threw the
-   * GWT ambiguity error), Mockito's injection loop aborted at the first failing target,
-   * leaving any subsequent {@code @InjectMocks} fields unconstructed (null). For those
-   * fields this method attempts no-arg construction before injecting, mirroring what
-   * {@code FieldInitializer} would have done had the exception not fired.
-   *
-   * <p>When called from the <em>success path</em> (after {@code openMocks()} returned
-   * normally), all targets are already non-null; null fields are simply skipped.
+   * @param constructIfNull when {@code true} (catch path only), a null target field is
+   *     instantiated via its no-arg constructor before injection, mirroring what
+   *     Mockito's {@code FieldInitializer} would have done for targets that were never
+   *     reached because the injection loop aborted early.  When {@code false} (success
+   *     path), null targets are silently skipped — Mockito deliberately chose not to
+   *     instantiate them.
    */
   private static void injectIntoAllTargets(Object owner,
-      java.util.Map<String, Object> ownerMocks) {
+      java.util.Map<String, Object> ownerMocks, boolean constructIfNull) {
     Class<?> clazz = owner.getClass();
     while (clazz != null && clazz != Object.class) {
       for (Field f : clazz.getDeclaredFields()) {
@@ -313,6 +311,7 @@ public class GwtMockito {
             continue;
           }
           if (target == null) {
+            if (!constructIfNull) continue;
             // Mockito's injection loop aborted before constructing this target.
             // Attempt no-arg construction so injection can proceed normally.
             target = tryInstantiate(f.getType());
