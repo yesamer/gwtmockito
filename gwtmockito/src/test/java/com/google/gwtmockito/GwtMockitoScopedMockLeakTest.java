@@ -16,6 +16,7 @@
 package com.google.gwtmockito;
 
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
@@ -26,8 +27,10 @@ import org.junit.runners.JUnit4;
 import org.mockito.Mock;
 import org.mockito.ScopedMock;
 
+import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Verifies that {@link GwtMockito#collectScopedMocks} correctly identifies
@@ -134,5 +137,45 @@ public class GwtMockitoScopedMockLeakTest {
     closeable.close();
 
     verify(scoped).closeOnDemand();
+  }
+
+  // ── isFinal guard in injectMocksIntoTarget ─────────────────────────────────
+
+  /** Target with a null-initialised final field that must never be overwritten. */
+  static class TargetWithFinalField {
+    final Object immutable = null; // null so the non-null guard doesn't short-circuit
+    Object mutable;
+  }
+
+  @SuppressWarnings("unchecked")
+  private static void injectMocksIntoTarget(Object target, Map<String, Object> mocks)
+      throws Exception {
+    Method m = GwtMockito.class.getDeclaredMethod(
+        "injectMocksIntoTarget", Object.class, Map.class);
+    m.setAccessible(true);
+    m.invoke(null, target, mocks);
+  }
+
+  @Test
+  public void injectMocksIntoTarget_doesNotWriteToFinalFields() throws Exception {
+    TargetWithFinalField target = new TargetWithFinalField();
+    Object injectedMock = new Object();
+
+    Map<String, Object> mocks = new java.util.LinkedHashMap<>();
+    mocks.put("immutable", injectedMock); // name matches, type matches — but field is final
+    mocks.put("mutable", injectedMock);   // should be injected normally
+
+    injectMocksIntoTarget(target, mocks);
+
+    // final field must not have been written — isFinal guard must have skipped it.
+    Field immutableField = TargetWithFinalField.class.getDeclaredField("immutable");
+    immutableField.setAccessible(true);
+    assertNull("final field must not be overwritten by injectMocksIntoTarget",
+        immutableField.get(target));
+
+    // non-final field must have been injected normally.
+    Field mutableField = TargetWithFinalField.class.getDeclaredField("mutable");
+    mutableField.setAccessible(true);
+    assertTrue("mutable field must be injected", mutableField.get(target) == injectedMock);
   }
 }
