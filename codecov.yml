@@ -1,0 +1,9 @@
+coverage:
+  status:
+    project:
+      default:
+        target: auto        # pass if coverage doesn't drop vs base branch
+        threshold: 1%       # allow up to 1% drop before failing
+    patch:
+      default:
+        target: 50%         # at least 50% of new lines in the PR must be covered
