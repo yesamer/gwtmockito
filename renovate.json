@@ -1,6 +1,28 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": [
-    "config:recommended"
+  "extends": ["config:recommended"],
+  "schedule": ["every weekend"],
+  "packageRules": [
+    {
+      "description": "Group all Maven dependency updates into a single PR",
+      "matchManagers": ["maven"],
+      "groupName": "Maven dependencies",
+      "automerge": true,
+      "automergeType": "pr",
+      "matchUpdateTypes": ["minor", "patch"]
+    },
+    {
+      "description": "Group all GitHub Actions updates into a single PR",
+      "matchManagers": ["github-actions"],
+      "groupName": "GitHub Actions",
+      "automerge": true,
+      "automergeType": "pr",
+      "matchUpdateTypes": ["minor", "patch"]
+    },
+    {
+      "description": "Major updates require manual review — never automerge",
+      "matchUpdateTypes": ["major"],
+      "automerge": false
+    }
   ]
 }
