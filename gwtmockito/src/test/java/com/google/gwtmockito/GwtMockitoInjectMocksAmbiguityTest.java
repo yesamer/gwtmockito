@@ -51,8 +51,20 @@ public class GwtMockitoInjectMocksAmbiguityTest {
     TextBox textBox;
   }
 
+  /**
+   * A second view type with a different field name to avoid Mockito's own
+   * "multiple fields of the same type" guard. Extends {@link Composite} so it
+   * also triggers the GWT base-class ambiguity on {@code Composite.widget}.
+   */
+  static class AnotherCompositeView extends Composite {
+    Label anotherLabel;
+    TextBox anotherTextBox;
+  }
+
   @Mock Label label;
   @Mock TextBox textBox;
+  @Mock Label anotherLabel;
+  @Mock TextBox anotherTextBox;
 
   /**
    * Mockito will construct {@link MyCompositeView} via its no-arg constructor and then inject
@@ -61,6 +73,13 @@ public class GwtMockitoInjectMocksAmbiguityTest {
    * both mocks are type-compatible with the private inherited {@code Composite.widget} field.
    */
   @InjectMocks MyCompositeView view;
+
+  /**
+   * Second {@code @InjectMocks} target declared after {@code view}. Mockito's injection loop
+   * aborts when it encounters the ambiguity on {@code view}, leaving {@code anotherView}
+   * unconstructed (null). {@code injectIntoAllTargets} must instantiate it and inject into it.
+   */
+  @InjectMocks AnotherCompositeView anotherView;
 
   @Test
   public void testInjectMocksDoesNotFailOnAmbiguousGwtBaseClassFields() {
@@ -78,5 +97,17 @@ public class GwtMockitoInjectMocksAmbiguityTest {
     widgetField.setAccessible(true);
     Object inheritedWidget = widgetField.get(view);
     assertNotNull("Composite.widget must be set (non-null) by the ambiguity fix", inheritedWidget);
+  }
+
+  @Test
+  public void testSecondInjectMocksTargetIsConstructedAndInjectedAfterAmbiguityRecovery() {
+    // When Mockito aborts at the first @InjectMocks target (view) due to the GWT ambiguity,
+    // the second target (anotherView) is left null. injectIntoAllTargets must construct it
+    // via no-arg constructor and inject the named mocks into it.
+    assertNotNull("anotherView must not be null after recovery", anotherView);
+    assertSame("anotherLabel must be injected by name into anotherView",
+        anotherLabel, anotherView.anotherLabel);
+    assertSame("anotherTextBox must be injected by name into anotherView",
+        anotherTextBox, anotherView.anotherTextBox);
   }
 }

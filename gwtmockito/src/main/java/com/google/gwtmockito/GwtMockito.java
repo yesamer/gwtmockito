@@ -286,9 +286,18 @@ public class GwtMockito {
 
   /**
    * Scans all {@code @InjectMocks}-annotated fields on the owner's class hierarchy.
-   * For each target that already exists, injects owner mocks into the target's null
-   * fields using name-then-type disambiguation, and fills any still-ambiguous fields
-   * (typically private GWT base-class fields) with a fresh placeholder mock.
+   * For each target, injects owner mocks into its null fields using name-then-type
+   * disambiguation, and fills any still-ambiguous fields (typically private GWT
+   * base-class fields) with a fresh placeholder mock.
+   *
+   * <p>When called from the <em>catch path</em> (after {@code openMocks()} threw the
+   * GWT ambiguity error), Mockito's injection loop aborted at the first failing target,
+   * leaving any subsequent {@code @InjectMocks} fields unconstructed (null). For those
+   * fields this method attempts no-arg construction before injecting, mirroring what
+   * {@code FieldInitializer} would have done had the exception not fired.
+   *
+   * <p>When called from the <em>success path</em> (after {@code openMocks()} returned
+   * normally), all targets are already non-null; null fields are simply skipped.
    */
   private static void injectIntoAllTargets(Object owner,
       java.util.Map<String, Object> ownerMocks) {
@@ -303,11 +312,36 @@ public class GwtMockito {
           } catch (IllegalAccessException ex) {
             continue;
           }
-          if (target == null) continue;
+          if (target == null) {
+            // Mockito's injection loop aborted before constructing this target.
+            // Attempt no-arg construction so injection can proceed normally.
+            target = tryInstantiate(f.getType());
+            if (target == null) continue; // uninjectible — leave null
+            try {
+              f.set(owner, target);
+            } catch (IllegalAccessException ex) {
+              continue;
+            }
+          }
           injectMocksIntoTarget(target, ownerMocks);
         }
       }
       clazz = clazz.getSuperclass();
+    }
+  }
+
+  /**
+   * Attempts to instantiate {@code type} via its no-arg constructor.
+   * Returns {@code null} silently if no accessible no-arg constructor exists or
+   * if instantiation fails — callers treat a null return as "skip this field".
+   */
+  private static Object tryInstantiate(Class<?> type) {
+    try {
+      java.lang.reflect.Constructor<?> ctor = type.getDeclaredConstructor();
+      ctor.setAccessible(true);
+      return ctor.newInstance();
+    } catch (Exception ignored) {
+      return null;
     }
   }
 
