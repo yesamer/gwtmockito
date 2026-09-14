@@ -212,13 +212,45 @@ public class GwtMockito {
       //   - ambiguous (multiple type-compatible mocks, GWT internal field)  →  fresh placeholder
       injectIntoAllTargets(owner, ownerMocks);
 
-      // Step 3: the mocks created by the failed openMocks() call are already registered with
-      // Mockito's internal state and do not require a separate session to be tracked. The runner
-      // calls GwtMockito.tearDown() after each test (via withAfters), which closes the
-      // openMocksCloseable and resets the bridge. Since openMocks() threw (no session opened),
-      // we return a no-op AutoCloseable — there is nothing to close for this invocation.
-      return () -> {};
+      // Step 3: IndependentAnnotationEngine already set every @Mock/@GwtMock field on the owner
+      // before the injection step threw. Any @MockedStatic or @MockedConstruction instances
+      // (ScopedMock) are now assigned to those fields. The AutoCloseable that would normally
+      // track them was never returned from the failed openMocks() call, so we build a
+      // replacement by scanning the owner's fields for ScopedMock instances and closing them
+      // via closeOnDemand(), exactly as IndependentAnnotationEngine's own lambda would do.
+      java.util.List<org.mockito.ScopedMock> scopedMocks = collectScopedMocks(owner);
+      return () -> {
+        for (org.mockito.ScopedMock sm : scopedMocks) {
+          sm.closeOnDemand();
+        }
+      };
     }
+  }
+
+  /**
+   * Collects all {@link org.mockito.ScopedMock} instances (i.e. {@code @MockedStatic} /
+   * {@code @MockedConstruction} fields) already set on the owner's {@code @Mock}-annotated
+   * fields. Used to build a replacement {@code AutoCloseable} when the normal one was lost
+   * because {@code openMocks()} threw before returning.
+   */
+  private static java.util.List<org.mockito.ScopedMock> collectScopedMocks(Object owner) {
+    java.util.List<org.mockito.ScopedMock> result = new java.util.ArrayList<>();
+    Class<?> clazz = owner.getClass();
+    while (clazz != null && clazz != Object.class) {
+      for (Field f : clazz.getDeclaredFields()) {
+        if (hasAnnotation(f, "org.mockito.Mock") || hasAnnotation(f, "com.google.gwtmockito.GwtMock")) {
+          f.setAccessible(true);
+          try {
+            Object val = f.get(owner);
+            if (val instanceof org.mockito.ScopedMock) {
+              result.add((org.mockito.ScopedMock) val);
+            }
+          } catch (IllegalAccessException ignored) {}
+        }
+      }
+      clazz = clazz.getSuperclass();
+    }
+    return result;
   }
 
   /**
