@@ -40,9 +40,8 @@ import org.mockito.Mock;
 public class GwtMockitoWithAftersTest {
 
   // -------------------------------------------------------------------------
-  // Path 1: withAfters addSuppressed — the primary test-failure AssertionError
-  // must survive as the reported failure; the teardown exception (if any) must
-  // be attached as a suppressed cause, not replace the primary failure.
+  // Path 1a: withAfters addSuppressed — the primary test-failure AssertionError
+  // must survive as the reported failure when tearDown succeeds.
   // -------------------------------------------------------------------------
 
   /**
@@ -70,6 +69,68 @@ public class GwtMockitoWithAftersTest {
     assertTrue("Expected AssertionError as top-level failure, got: " + thrown.getClass(),
         thrown instanceof AssertionError);
     assertEquals("primary failure", thrown.getMessage());
+  }
+
+  // -------------------------------------------------------------------------
+  // Path 1b: withAfters addSuppressed — when BOTH the test body and tearDown
+  // throw, the primary failure must remain top-level and the teardown
+  // exception must appear in getSuppressed(), not replace the primary.
+  // -------------------------------------------------------------------------
+
+  /**
+   * Fake test that:
+   * <ol>
+   *   <li>Replaces {@code GwtMockito.openMocksCloseable} with a lambda that
+   *       throws, so that the runner's {@code tearDown()} call propagates a
+   *       {@code RuntimeException} after the test body fails.</li>
+   *   <li>Throws an {@link AssertionError} as the primary failure.</li>
+   * </ol>
+   * The runner must attach the teardown exception as a suppressed cause of the
+   * primary {@code AssertionError}, not replace it.
+   */
+  @RunWith(GwtMockitoTestRunner.class)
+  public static class FailingTestWithTearDownFailure {
+    @Mock Object mock;
+
+    @Test
+    public void failsWithBrokenTearDown() throws Exception {
+      // Inject a closeable that throws into the static field that tearDown() will close.
+      // We are running inside the runner's classloader so this GwtMockito class is the
+      // same instance the runner uses — no cross-classloader gap.
+      java.lang.reflect.Field f = GwtMockito.class.getDeclaredField("openMocksCloseable");
+      f.setAccessible(true);
+      f.set(null, (AutoCloseable) () -> { throw new Exception("teardown bang"); });
+
+      throw new AssertionError("primary failure");
+    }
+  }
+
+  @Test
+  public void tearDownExceptionIsSuppressedWhenTestAlsoFails() {
+    Result result = JUnitCore.runClasses(FailingTestWithTearDownFailure.class);
+
+    assertEquals("Expected exactly one reported failure", 1, result.getFailureCount());
+    Throwable thrown = result.getFailures().get(0).getException();
+
+    // Primary failure must be the AssertionError, not the teardown RuntimeException.
+    assertTrue("Primary failure must be AssertionError, got: " + thrown.getClass(),
+        thrown instanceof AssertionError);
+    assertEquals("primary failure", thrown.getMessage());
+
+    // Teardown exception must appear as a suppressed cause.
+    Throwable[] suppressed = thrown.getSuppressed();
+    assertEquals("Exactly one suppressed exception expected", 1, suppressed.length);
+    // withAfters wraps the tearDown RuntimeException in another RuntimeException.
+    assertTrue("Suppressed cause must be RuntimeException wrapping the teardown failure",
+        suppressed[0] instanceof RuntimeException);
+    // Verify the teardown failure is reachable in the cause chain.
+    Throwable cause = suppressed[0];
+    boolean found = false;
+    while (cause != null) {
+      if ("teardown bang".equals(cause.getMessage())) { found = true; break; }
+      cause = cause.getCause();
+    }
+    assertTrue("'teardown bang' must be reachable in the suppressed cause chain", found);
   }
 
   // -------------------------------------------------------------------------
