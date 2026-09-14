@@ -12,6 +12,8 @@
  * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
  * License for the specific language governing permissions and limitations under
  * the License.
+ *
+ * Modifications copyright (C) 2026 YCM
  */
 package com.google.gwtmockito;
 
@@ -261,13 +263,13 @@ public class GwtMockitoTestRunner extends BlockJUnit4ClassRunner {
     Collection<String> packages = new LinkedList<String>();
     packages.add("com.vladium"); // To support EMMA code coverage tools
     packages.add("jdk.internal.reflect"); // Java9 loading mechanism
-    packages.add("net.bytebuddy"); // To support Mockito 2
+    packages.add("net.bytebuddy"); // Required by Mockito 5's InlineByteBuddyMockMaker
     packages.add("net.sf.cglib"); // To support Mockito 1
     packages.add("net.sourceforge.cobertura"); // To support Cobertura code coverage tools
     packages.add("org.jacoco"); // To support JaCoCo code coverage tools
     packages.add("org.hamcrest"); // Since this package is referenced directly from org.junit
     packages.add("org.junit"); // Make sure the ParentRunner can recognize annotations like @Test
-    packages.add("org.mockito.cglib"); // To support Mockito 1
+    packages.add("org.mockito"); // Mockito 5 injects MockMethodDispatcher via agent; must not be re-loaded by Javassist
 
     WithPackagesToLoadViaStandardClassLoader annotation = unitTestClass.getAnnotation(WithPackagesToLoadViaStandardClassLoader.class);
     if (annotation != null) {
@@ -399,6 +401,40 @@ public class GwtMockitoTestRunner extends BlockJUnit4ClassRunner {
       throw new RuntimeException(e);
     }
     return super.withBefores(method, target, statement);
+  }
+
+  /**
+   * Overridden to invoke GwtMockito.tearDown after each test, ensuring that the Mockito session
+   * opened by {@link #withBefores} is properly closed (finishMocking) and the GWT bridge is reset.
+   */
+  @Override
+  @SuppressWarnings("deprecation") // Mirrors withBefores pattern
+  protected final Statement withAfters(FrameworkMethod method, Object target,
+      Statement statement) {
+    Statement base = super.withAfters(method, target, statement);
+    return new Statement() {
+      @Override
+      public void evaluate() throws Throwable {
+        Throwable primary = null;
+        try {
+          base.evaluate();
+        } catch (Throwable t) {
+          primary = t;
+        } finally {
+          try {
+            customLoadedGwtMockito.getMethod("tearDown").invoke(null);
+          } catch (Exception e) {
+            RuntimeException tearDownEx = new RuntimeException(e);
+            if (primary != null) {
+              primary.addSuppressed(tearDownEx);
+            } else {
+              primary = tearDownEx;
+            }
+          }
+        }
+        if (primary != null) throw primary;
+      }
+    };
   }
 
   /** Custom classloader that performs additional modifications to loaded classes. */
