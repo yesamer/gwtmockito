@@ -362,7 +362,8 @@ public class GwtMockito {
     Class<?> clazz = target.getClass();
     while (clazz != null && clazz != Object.class) {
       for (Field f : clazz.getDeclaredFields()) {
-        if (java.lang.reflect.Modifier.isStatic(f.getModifiers())) continue;
+        if (java.lang.reflect.Modifier.isStatic(f.getModifiers())
+            || java.lang.reflect.Modifier.isFinal(f.getModifiers())) continue;
         f.setAccessible(true);
         try {
           if (f.get(target) != null) continue; // already set — leave untouched
