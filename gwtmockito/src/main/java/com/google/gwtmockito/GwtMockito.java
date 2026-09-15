@@ -44,11 +44,14 @@ import java.lang.annotation.Annotation;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
+import java.lang.reflect.ParameterizedType;
+import java.lang.reflect.Type;
+import java.lang.reflect.TypeVariable;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * A library to make Mockito-based testing of GWT applications easier. Most
@@ -101,24 +104,20 @@ public class GwtMockito {
    * error. Recovery (placeholder injection) is restricted to fields declared on classes within
    * these packages so that ambiguity errors from user-defined classes are still rethrown.
    */
-  private static final java.util.Set<String> GWT_BASE_PACKAGES = new java.util.HashSet<>(
-      java.util.Arrays.asList(
-          "com.google.gwt.",
-          "org.gwtproject."
-      ));
+  private static final Set<String> GWT_BASE_PACKAGES = Set.of(
+      "com.google.gwt.",
+      "org.gwtproject."
+  );
 
-  private static final Map<Class<?>, FakeProvider<?>> DEFAULT_FAKE_PROVIDERS =
-      new HashMap<Class<?>, FakeProvider<?>>();
-  static {
-    DEFAULT_FAKE_PROVIDERS.put(ClientBundle.class, new FakeClientBundleProvider());
-    DEFAULT_FAKE_PROVIDERS.put(CssResource.class, new FakeMessagesProvider<CssResource>());
-    DEFAULT_FAKE_PROVIDERS.put(LocaleInfoImpl.class, new FakeLocaleInfoImplProvider());
-    DEFAULT_FAKE_PROVIDERS.put(Messages.class, new FakeMessagesProvider<Messages>());
-    DEFAULT_FAKE_PROVIDERS.put(NumberConstantsImpl.class, new FakeNumberConstantsImplProvider());
-    DEFAULT_FAKE_PROVIDERS.put(
-        SafeHtmlTemplates.class, new FakeMessagesProvider<SafeHtmlTemplates>());
-    DEFAULT_FAKE_PROVIDERS.put(UiBinder.class, new FakeUiBinderProvider());
-  }
+  private static final Map<Class<?>, FakeProvider<?>> DEFAULT_FAKE_PROVIDERS = new HashMap<>(Map.of(
+      ClientBundle.class,      new FakeClientBundleProvider(),
+      CssResource.class,       new FakeMessagesProvider<CssResource>(),
+      LocaleInfoImpl.class,    new FakeLocaleInfoImplProvider(),
+      Messages.class,          new FakeMessagesProvider<Messages>(),
+      NumberConstantsImpl.class, new FakeNumberConstantsImplProvider(),
+      SafeHtmlTemplates.class, new FakeMessagesProvider<SafeHtmlTemplates>(),
+      UiBinder.class,          new FakeUiBinderProvider()
+  ));
 
   private static Bridge bridge;
   private static AutoCloseable openMocksCloseable;
@@ -245,12 +244,12 @@ public class GwtMockito {
     Class<?> clazz = owner.getClass();
     while (clazz != null && clazz != Object.class) {
       for (Field f : clazz.getDeclaredFields()) {
-        if (hasAnnotation(f, "org.mockito.Mock") || hasAnnotation(f, "com.google.gwtmockito.GwtMock")) {
+        if (isMockField(f)) {
           f.setAccessible(true);
           try {
             Object val = f.get(owner);
-            if (val instanceof org.mockito.ScopedMock) {
-              result.add((org.mockito.ScopedMock) val);
+            if (val instanceof org.mockito.ScopedMock sm) {
+              result.add(sm);
             }
           } catch (IllegalAccessException ignored) {}
         }
@@ -269,7 +268,7 @@ public class GwtMockito {
     Class<?> clazz = owner.getClass();
     while (clazz != null && clazz != Object.class) {
       for (Field f : clazz.getDeclaredFields()) {
-        if (hasAnnotation(f, "org.mockito.Mock") || hasAnnotation(f, "com.google.gwtmockito.GwtMock")) {
+        if (isMockField(f)) {
           f.setAccessible(true);
           try {
             Object mock = f.get(owner);
@@ -373,10 +372,9 @@ public class GwtMockito {
           // mock and causes incorrect ambiguous-placeholder injection. Resolve the type
           // variable to its concrete bound in this target's class hierarchy first.
           Class<?> effectiveType = f.getType();
-          java.lang.reflect.Type genericType = f.getGenericType();
-          if (genericType instanceof java.lang.reflect.TypeVariable) {
-            Class<?> resolved = resolveTypeVariable(
-                (java.lang.reflect.TypeVariable<?>) genericType, target.getClass());
+          Type genericType = f.getGenericType();
+          if (genericType instanceof TypeVariable<?> tv) {
+            Class<?> resolved = resolveTypeVariable(tv, target.getClass());
             if (resolved != null) {
               effectiveType = resolved;
             }
@@ -427,14 +425,12 @@ public class GwtMockito {
    * @param concreteClass the runtime class of the injection target
    * @return the resolved {@link Class}, or {@code null} if resolution is not possible
    */
-  private static Class<?> resolveTypeVariable(
-      java.lang.reflect.TypeVariable<?> tv, Class<?> concreteClass) {
+  private static Class<?> resolveTypeVariable(TypeVariable<?> tv, Class<?> concreteClass) {
     // The generic declaration is the class/interface that introduced this type parameter.
     // We only handle class-level type variables (not method-level ones).
-    if (!(tv.getGenericDeclaration() instanceof Class)) {
+    if (!(tv.getGenericDeclaration() instanceof Class<?> declaringClass)) {
       return null;
     }
-    Class<?> declaringClass = (Class<?>) tv.getGenericDeclaration();
 
     // Walk up the superclass chain from concreteClass until we find a ParameterizedType
     // whose raw type is the class immediately below declaringClass in the hierarchy.
@@ -442,32 +438,30 @@ public class GwtMockito {
     // are bound to.
     Class<?> child = concreteClass;
     while (child != null && child != Object.class) {
-      java.lang.reflect.Type genericSuper = child.getGenericSuperclass();
-      if (!(genericSuper instanceof java.lang.reflect.ParameterizedType)) {
+      Type genericSuper = child.getGenericSuperclass();
+      if (!(genericSuper instanceof ParameterizedType pt)) {
         child = child.getSuperclass();
         continue;
       }
-      java.lang.reflect.ParameterizedType pt = (java.lang.reflect.ParameterizedType) genericSuper;
       Class<?> rawSuper = (Class<?>) pt.getRawType();
 
       if (rawSuper.equals(declaringClass)) {
         // Found the parameterized supertype that directly binds declaringClass's parameters.
-        java.lang.reflect.TypeVariable<?>[] params = declaringClass.getTypeParameters();
-        java.lang.reflect.Type[] args = pt.getActualTypeArguments();
+        TypeVariable<?>[] params = declaringClass.getTypeParameters();
+        Type[] args = pt.getActualTypeArguments();
         for (int i = 0; i < params.length; i++) {
           if (params[i].equals(tv)) { // object equality: compares both name and declaring class
-            if (args[i] instanceof Class) {
-              return (Class<?>) args[i];
+            if (args[i] instanceof Class<?> argClass) {
+              return argClass;
             }
             // The slot is itself a TypeVariable — the binding is propagated from a
             // subclass (e.g. Middle<P> extends Base<P> where P is still unresolved).
             // Recurse with the original concreteClass so the full hierarchy is
-            // available to resolve the forwarded type variable.  Using child here
+            // available to resolve the forwarded type variable. Using child here
             // would start the walk at Middle and miss the binding supplied by
             // Concrete extends Middle<MyPresenter>.
-            if (args[i] instanceof java.lang.reflect.TypeVariable) {
-              return resolveTypeVariable(
-                  (java.lang.reflect.TypeVariable<?>) args[i], concreteClass);
+            if (args[i] instanceof TypeVariable<?> forwarded) {
+              return resolveTypeVariable(forwarded, concreteClass);
             }
             return null; // wildcard or parameterized type — not injectable
           }
@@ -573,8 +567,37 @@ public class GwtMockito {
     return false;
   }
 
+  /**
+   * Returns {@code true} when {@code field} carries either {@code @Mock} or {@code @GwtMock},
+   * using FQN string comparison so that annotation classes loaded through GwtMockito's Javassist
+   * classloader are correctly identified regardless of classloader identity.
+   *
+   * <p>Uses {@link Field#getDeclaredAnnotations()} rather than {@link Field#getAnnotations()}
+   * because Java never inherits annotations to fields; the two sets are always identical for
+   * fields, but {@code getDeclaredAnnotations()} avoids a redundant inherited-annotation scan.
+   */
+  private static boolean isMockField(Field field) {
+    for (Annotation a : field.getDeclaredAnnotations()) {
+      String name = a.annotationType().getName();
+      if ("org.mockito.Mock".equals(name) || "com.google.gwtmockito.GwtMock".equals(name)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Returns {@code true} when {@code field} carries the annotation identified by
+   * {@code annotationClassName}, using FQN string comparison so that annotation classes loaded
+   * through GwtMockito's Javassist classloader are correctly identified regardless of classloader
+   * identity.
+   *
+   * <p>Uses {@link Field#getDeclaredAnnotations()} rather than {@link Field#getAnnotations()}
+   * because Java never inherits annotations to fields; the two sets are always identical for
+   * fields, but {@code getDeclaredAnnotations()} avoids a redundant inherited-annotation scan.
+   */
   private static boolean hasAnnotation(Field field, String annotationClassName) {
-    for (Annotation a : field.getAnnotations()) {
+    for (Annotation a : field.getDeclaredAnnotations()) {
       if (a.annotationType().getName().equals(annotationClassName)) {
         return true;
       }
@@ -595,9 +618,9 @@ public class GwtMockito {
   }
 
   private static void registerGwtMocks(Object owner) {
-    Class<? extends Object> clazz = owner.getClass();
+    Class<?> clazz = owner.getClass();
 
-    while (!"java.lang.Object".equals(clazz.getName())) {
+    while (clazz != Object.class) {
       for (Field field : clazz.getDeclaredFields()) {
         if (field.isAnnotationPresent(GwtMock.class)) {
           Object mock = Mockito.mock(field.getType());
@@ -637,55 +660,41 @@ public class GwtMockito {
   }
 
   private static <T> T getFakeFromProviderMap(Class<T> type, Map<Class<?>, FakeProvider<?>> map) {
-      // See if we have any providers for this type or its supertypes.
-      Map<Class<?>, FakeProvider<?>> legalProviders = new HashMap<Class<?>, FakeProvider<?>>();
-      for (Entry<Class<?>, FakeProvider<?>> entry : map.entrySet()) {
-        if (entry.getKey().isAssignableFrom(type)) {
-          legalProviders.put(entry.getKey(), entry.getValue());
-        }
-      }
+    // Collect all providers whose key type is a supertype of (or equal to) the requested type.
+    Map<Class<?>, FakeProvider<?>> legalProviders = map.entrySet().stream()
+        .filter(e -> e.getKey().isAssignableFrom(type))
+        .collect(Collectors.toMap(Entry::getKey, Entry::getValue));
 
-      // Filter the set of legal providers to the most specific type.
-      Map<Class<?>, FakeProvider<?>> filteredProviders = new HashMap<Class<?>, FakeProvider<?>>();
-      for (Entry<Class<?>, FakeProvider<?>> candidate : legalProviders.entrySet()) {
-        boolean isSpecific = true;
-        for (Entry<Class<?>, FakeProvider<?>> other : legalProviders.entrySet()) {
-          if (candidate != other && candidate.getKey().isAssignableFrom(other.getKey())) {
-            isSpecific = false;
-            break;
-          }
-        }
-        if (isSpecific) {
-          filteredProviders.put(candidate.getKey(), candidate.getValue());
-        }
-      }
+    // Keep only the most specific entries — discard any entry E for which another entry
+    // covers a strictly more-specific subtype (i.e. E.key.isAssignableFrom(other.key)).
+    Map<Class<?>, FakeProvider<?>> filteredProviders = legalProviders.entrySet().stream()
+        .filter(candidate -> legalProviders.entrySet().stream()
+            .noneMatch(other -> other != candidate
+                && candidate.getKey().isAssignableFrom(other.getKey())))
+        .collect(Collectors.toMap(Entry::getKey, Entry::getValue));
 
-      // If exactly one provider remains, use it.
-      if (filteredProviders.size() == 1) {
-        // We know this is safe since we checked that the types are assignable
-        @SuppressWarnings({"rawtypes", "cast"})
-        Class rawType = (Class) type;
-        return (T) filteredProviders.values().iterator().next().getFake(rawType);
-      } else if (filteredProviders.isEmpty()) {
-        return null;
-      } else {
-        throw new IllegalArgumentException("Can't decide which provider to use for " +
-            type.getSimpleName() +
-            ", it could be provided as any of the following: " +
-            mapToSimpleNames(filteredProviders.keySet()) +
-            ". Add a provider for " +
-            type.getSimpleName() +
-            " to resolve this ambiguity.");
-      }
+    // If exactly one provider remains, use it.
+    if (filteredProviders.size() == 1) {
+      // We know this is safe since we checked that the types are assignable
+      @SuppressWarnings({"rawtypes", "unchecked"})
+      T fake = (T) filteredProviders.values().iterator().next().getFake((Class) type);
+      return fake;
+    } else if (filteredProviders.isEmpty()) {
+      return null;
+    } else {
+      throw new IllegalArgumentException("Can't decide which provider to use for "
+          + type.getSimpleName()
+          + ", it could be provided as any of the following: "
+          + mapToSimpleNames(filteredProviders.keySet())
+          + ". Add a provider for "
+          + type.getSimpleName()
+          + " to resolve this ambiguity.");
+    }
   }
 
-    private static Set<String> mapToSimpleNames(Set<Class<?>> classes) {
-      Set<String> simpleNames = new HashSet<String>();
-      for (Class<?> clazz : classes) {
-        simpleNames.add(clazz.getSimpleName());
-      }
-      return simpleNames;
-    }
+  private static Set<String> mapToSimpleNames(Set<Class<?>> classes) {
+    return classes.stream().map(Class::getSimpleName).collect(Collectors.toSet());
+  }
 
   private static class Bridge extends GWTBridge {
     private final Map<Class<?>, FakeProvider<?>> registeredProviders =

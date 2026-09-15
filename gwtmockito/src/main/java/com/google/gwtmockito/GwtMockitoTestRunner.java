@@ -76,9 +76,9 @@ import org.junit.runners.model.TestClass;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
-import java.util.LinkedList;
 import java.util.List;
 
 /**
@@ -193,41 +193,40 @@ public class GwtMockitoTestRunner extends BlockJUnit4ClassRunner {
    * @return a collection of classes whose methods should be stubbed with no-ops while running tests
    */
   protected Collection<Class<?>> getClassesToStub() {
-    Collection<Class<?>> classes = new LinkedList<Class<?>>();
-    classes.add(Composite.class);
-    classes.add(DOM.class);
-    classes.add(UIObject.class);
-    classes.add(Widget.class);
-
-    classes.add(DataGrid.class);
-    classes.add(HTMLTable.class);
-    classes.add(Image.class);
-
-    classes.add(AbsolutePanel.class);
-    classes.add(CellList.class);
-    classes.add(CellPanel.class);
-    classes.add(CellTable.class);
-    classes.add(ComplexPanel.class);
-    classes.add(DeckLayoutPanel.class);
-    classes.add(DeckPanel.class);
-    classes.add(DecoratorPanel.class);
-    classes.add(DockLayoutPanel.class);
-    classes.add(DockPanel.class);
-    classes.add(FlowPanel.class);
-    classes.add(FocusPanel.class);
-    classes.add(HorizontalPanel.class);
-    classes.add(HTMLPanel.class);
-    classes.add(LayoutPanel.class);
-    classes.add(Panel.class);
-    classes.add(PopupPanel.class);
-    classes.add(RenderablePanel.class);
-    classes.add(ResizeLayoutPanel.class);
-    classes.add(SimpleLayoutPanel.class);
-    classes.add(SimplePanel.class);
-    classes.add(SplitLayoutPanel.class);
-    classes.add(StackPanel.class);
-    classes.add(VerticalPanel.class);
-    classes.add(ValueListBox.class);
+    Collection<Class<?>> classes = new ArrayList<>(Arrays.asList(
+        Composite.class,
+        DOM.class,
+        UIObject.class,
+        Widget.class,
+        DataGrid.class,
+        HTMLTable.class,
+        Image.class,
+        AbsolutePanel.class,
+        CellList.class,
+        CellPanel.class,
+        CellTable.class,
+        ComplexPanel.class,
+        DeckLayoutPanel.class,
+        DeckPanel.class,
+        DecoratorPanel.class,
+        DockLayoutPanel.class,
+        DockPanel.class,
+        FlowPanel.class,
+        FocusPanel.class,
+        HorizontalPanel.class,
+        HTMLPanel.class,
+        LayoutPanel.class,
+        Panel.class,
+        PopupPanel.class,
+        RenderablePanel.class,
+        ResizeLayoutPanel.class,
+        SimpleLayoutPanel.class,
+        SimplePanel.class,
+        SplitLayoutPanel.class,
+        StackPanel.class,
+        VerticalPanel.class,
+        ValueListBox.class
+    ));
 
     WithClassesToStub annotation = unitTestClass.getAnnotation(WithClassesToStub.class);
     if (annotation != null) {
@@ -260,16 +259,17 @@ public class GwtMockitoTestRunner extends BlockJUnit4ClassRunner {
    *         string in the collection will always be loaded via the system classloader
    */
   protected Collection<String> getPackagesToLoadViaStandardClassloader() {
-    Collection<String> packages = new LinkedList<String>();
-    packages.add("com.vladium"); // To support EMMA code coverage tools
-    packages.add("jdk.internal.reflect"); // Java9 loading mechanism
-    packages.add("net.bytebuddy"); // Required by Mockito 5's InlineByteBuddyMockMaker
-    packages.add("net.sf.cglib"); // To support Mockito 1
-    packages.add("net.sourceforge.cobertura"); // To support Cobertura code coverage tools
-    packages.add("org.jacoco"); // To support JaCoCo code coverage tools
-    packages.add("org.hamcrest"); // Since this package is referenced directly from org.junit
-    packages.add("org.junit"); // Make sure the ParentRunner can recognize annotations like @Test
-    packages.add("org.mockito"); // Mockito 5 injects MockMethodDispatcher via agent; must not be re-loaded by Javassist
+    Collection<String> packages = new ArrayList<>(Arrays.asList(
+        "com.vladium",           // To support EMMA code coverage tools
+        "jdk.internal.reflect",  // Java 9+ loading mechanism
+        "net.bytebuddy",         // Required by Mockito 5's InlineByteBuddyMockMaker
+        "net.sf.cglib",          // To support Mockito 1
+        "net.sourceforge.cobertura", // To support Cobertura code coverage tools
+        "org.jacoco",            // To support JaCoCo code coverage tools
+        "org.hamcrest",          // Since this package is referenced directly from org.junit
+        "org.junit",             // Make sure the ParentRunner can recognize annotations like @Test
+        "org.mockito"            // Mockito 5 injects MockMethodDispatcher via agent; must not be re-loaded by Javassist
+    ));
 
     WithPackagesToLoadViaStandardClassLoader annotation = unitTestClass.getAnnotation(WithPackagesToLoadViaStandardClassLoader.class);
     if (annotation != null) {
@@ -303,7 +303,7 @@ public class GwtMockitoTestRunner extends BlockJUnit4ClassRunner {
    * @see ClassPool#appendClassPath(String)
    */
   protected List<String> getAdditionalClasspaths() {
-    return new LinkedList<String>();
+    return new ArrayList<>();
   }
 
   /**
@@ -476,9 +476,14 @@ public class GwtMockitoTestRunner extends BlockJUnit4ClassRunner {
         method.setModifiers(method.getModifiers() & ~Modifier.FINAL);
       }
 
+      // Compute classesToStub once per class load — getClassesToStub() may be overridden
+      // by subclasses and allocates a new collection on every call. Caching it here avoids
+      // calling it once per method (potentially dozens of times for large GWT widget classes).
+      Collection<Class<?>> classesToStub = getClassesToStub();
+
       // Create stub implementations for certain methods
       for (CtMethod method : clazz.getDeclaredMethods()) {
-        if (StubGenerator.shouldStub(method, getClassesToStub())) {
+        if (StubGenerator.shouldStub(method, classesToStub)) {
           method.setModifiers(method.getModifiers() & ~Modifier.NATIVE);
           CtClass returnType = method.getReturnType();
           // TODO(ekuefler): Handle primitives, voids, and enums in StubGenerator
@@ -499,7 +504,7 @@ public class GwtMockitoTestRunner extends BlockJUnit4ClassRunner {
       }
 
       // Also stub certain constructors
-      for (Class<?> classToStub : getClassesToStub()) {
+      for (Class<?> classToStub : classesToStub) {
         if (classToStub.getName().equals(clazz.getName())) {
           for (CtConstructor constructor : clazz.getConstructors()) {
             String parameters = makeNullParameters(
@@ -516,29 +521,20 @@ public class GwtMockitoTestRunner extends BlockJUnit4ClassRunner {
       }
       StringBuilder params = new StringBuilder();
       for (CtClass paramClass : paramClasses) {
-        params.append(",");
-        String className = paramClass.getName();
-        if (className.equals("boolean")) {
-          params.append("false");
-        } else if (className.equals("byte")) {
-          params.append("(byte) 0");
-        } else if (className.equals("char")) {
-          params.append("(char) 0");
-        } else if (className.equals("double")) {
-          params.append("(double) 0");
-        } else if (className.equals("int")) {
-          params.append("(int) 0");
-        } else if (className.equals("float")) {
-          params.append("(float) 0");
-        } else if (className.equals("long")) {
-          params.append("(long) 0");
-        } else if (className.equals("short")) {
-          params.append("(short) 0");
-        } else {
-          params.append(newMockForClassSnippet(paramClass));
+        params.append(',');
+        switch (paramClass.getName()) {
+          case "boolean" -> params.append("false");
+          case "byte"    -> params.append("(byte) 0");
+          case "char"    -> params.append("(char) 0");
+          case "double"  -> params.append("(double) 0");
+          case "int"     -> params.append("(int) 0");
+          case "float"   -> params.append("(float) 0");
+          case "long"    -> params.append("(long) 0");
+          case "short"   -> params.append("(short) 0");
+          default        -> params.append(newMockForClassSnippet(paramClass));
         }
       }
-      return params.substring(1).toString();
+      return params.substring(1);
     }
 
     private String newMockForClassSnippet(CtClass paramClass) {

@@ -15,7 +15,7 @@ to call GWT.create from JUnit tests, returning [Mockito][1] mocks.
 
 > **This is the YCM fork** of the original [google/gwtmockito][orig], which is
 > no longer maintained. This fork modernizes the project with:
-> - **Mockito 5.x** compatibility (replaces 1.x)
+> - **Mockito 5.23.0** compatibility (replaces 1.x)
 > - **GWT 2.13.1** (`org.gwtproject`) — replaces the archived `com.google.gwt` 2.8.0
 > - **Java 17** source/target
 > - Full Mockito session lifecycle management (`openMocks` / `tearDown`)
@@ -202,7 +202,7 @@ native method stubs are not available.
 ## Version history
 
 ### 2.0.0 (YCM fork)
-  * Upgraded to Mockito 5.17.0.
+  * Upgraded to Mockito 5.23.0.
   * Upgraded to GWT 2.13.1 (`org.gwtproject`).
   * Upgraded to Java 17.
   * `tearDown()` now properly closes the Mockito session opened by `openMocks()`.
@@ -213,6 +213,16 @@ native method stubs are not available.
   * Fixed `TypeVariable` field injection in generic base view classes.
   * Replaced deprecated `org.mockito.Matchers` with `org.mockito.ArgumentMatchers`.
   * Dropped PowerMock test dependency (incompatible with Mockito 5).
+  * Applied Java 17 API throughout: `instanceof` pattern matching, `Set.of`/`Map.of`
+    factory methods, arrow-case `switch`, Stream API — no behaviour changes.
+  * Eliminated `LinkedList` in favour of `ArrayList`; deduplicated `@Mock`/`@GwtMock`
+    field detection into a shared `isMockField()` helper.
+  * Fixed `field.getAnnotations()` → `getDeclaredAnnotations()` and hierarchy-walk
+    termination to use identity check (`clazz != Object.class`).
+  * Cached `getClassesToStub()` per class load in the Javassist translator to avoid
+    repeated allocations during method stubbing.
+  * Added 15 new unit tests covering `tearDown` idempotency, `isGwtBaseClass`,
+    `hasInjectMocksField`, `hasInjectMocksTargetExtendingGwtBase`, and `isMockField`.
 
 ### 1.1.9
   * Support ResourcePrototype methods in fake ClientBundles. (Thanks to zbynek)
