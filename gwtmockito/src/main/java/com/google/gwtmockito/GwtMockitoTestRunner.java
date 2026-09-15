@@ -387,6 +387,8 @@ public class GwtMockitoTestRunner extends BlockJUnit4ClassRunner {
 
   /**
    * Overridden to invoke GwtMockito.initMocks before starting each test.
+   * GwtMockito.initMocks handles @Mock, @GwtMock, and @InjectMocks (including the
+   * Mockito 5 ambiguity fix for GWT base-class fields).
    */
   @Override
   @SuppressWarnings("deprecation") // Currently the only way to support befores
