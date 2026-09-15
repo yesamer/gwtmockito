@@ -221,7 +221,7 @@ native method stubs are not available.
     termination to use identity check (`clazz != Object.class`).
   * Cached `getClassesToStub()` per class load in the Javassist translator to avoid
     repeated allocations during method stubbing.
-  * Added 15 new unit tests covering `tearDown` idempotency, `isGwtBaseClass`,
+  * Added unit tests covering `tearDown` idempotency, `isGwtBaseClass`,
     `hasInjectMocksField`, `hasInjectMocksTargetExtendingGwtBase`, and `isMockField`.
 
 ### 1.1.9
