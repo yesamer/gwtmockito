@@ -38,7 +38,7 @@ import java.lang.reflect.Method;
  *   <li>{@code ClassAndMethod.hashCode()} — verified consistent with equals.</li>
  * </ul>
  *
- * <p>{@code ClassAndMethod} is package-private, so it is accessed via reflection.
+ * <p>{@code ClassAndMethod} is private, so it is accessed via reflection.
  */
 @RunWith(JUnit4.class)
 public class StubGeneratorTest {
