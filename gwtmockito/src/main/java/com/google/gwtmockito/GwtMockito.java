@@ -553,16 +553,33 @@ public class GwtMockito {
   }
 
   /**
-   * Returns true when {@code e} originates from Mockito 5's
+   * Returns true when {@code e} originates specifically from Mockito 5's
    * {@code TypeBasedCandidateFilter.isCompatibleTypes()} casting a
-   * {@code sun.reflect.generics.reflectiveObjects.TypeVariableImpl} to {@link Class}.
-   * The JVM always uses the same internal {@code TypeVariableImpl} class from
-   * {@code java.base} regardless of which classloader loaded the user class, so the
-   * message is stable across standard and Javassist classloaders.
+   * {@code TypeVariableImpl} to {@link Class}.
+   *
+   * <p>Both conditions must hold:
+   * <ol>
+   *   <li>The exception message contains {@code "TypeVariableImpl"} — the JVM always
+   *       includes the source class name in a failed checkcast message.</li>
+   *   <li>The stack trace contains a frame for
+   *       {@code org.mockito.internal.configuration.injection.filter.TypeBasedCandidateFilter.isCompatibleTypes}
+   *       — ensuring no unrelated code that happens to cast a TypeVariableImpl is
+   *       mistakenly recovered.</li>
+   * </ol>
    */
   private static boolean isTypeVariableImplCastException(ClassCastException e) {
     String msg = e.getMessage();
-    return msg != null && msg.contains("TypeVariableImpl");
+    if (msg == null || !msg.contains("TypeVariableImpl")) {
+      return false;
+    }
+    for (StackTraceElement frame : e.getStackTrace()) {
+      if ("org.mockito.internal.configuration.injection.filter.TypeBasedCandidateFilter"
+              .equals(frame.getClassName())
+          && "isCompatibleTypes".equals(frame.getMethodName())) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /** Returns true when {@code clazz} is a GWT framework class (not user code). */
