@@ -12,6 +12,8 @@
  * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
  * License for the specific language governing permissions and limitations under
  * the License.
+ *
+ * Modifications copyright (C) 2026 YCM
  */
 package com.google.gwtmockito.impl;
 
@@ -98,8 +100,9 @@ public class StubGenerator {
   /** Invokes the stubbed behavior of the given method. */
   public static Object invoke(Class<?> returnType, String className, String methodName) {
     // If we have an explicit implementation for this method, invoke it
-    if (STUB_METHODS.containsKey(new ClassAndMethod(className, methodName))) {
-      return STUB_METHODS.get(new ClassAndMethod(className, methodName)).invoke();
+    StubMethod explicit = STUB_METHODS.get(new ClassAndMethod(className, methodName));
+    if (explicit != null) {
+      return explicit.invoke();
     }
 
     // Otherwise return an appropriate basic type
@@ -148,8 +151,7 @@ public class StubGenerator {
 
     @Override
     public boolean equals(Object obj) {
-      if (obj instanceof ClassAndMethod) {
-        ClassAndMethod other = (ClassAndMethod) obj;
+      if (obj instanceof ClassAndMethod other) {
         return className.equals(other.className) && methodName.equals(other.methodName);
       }
       return false;
@@ -157,7 +159,7 @@ public class StubGenerator {
 
     @Override
     public int hashCode() {
-      return (className + methodName).hashCode();
+      return className.hashCode() * 31 + methodName.hashCode();
     }
   }
 
