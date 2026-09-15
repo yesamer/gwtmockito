@@ -78,8 +78,8 @@ public class MakeNullParametersTest {
 
   /**
    * Instantiating {@link AllPrimitivesSubclass} forces the Javassist translator to rewrite
-   * its constructor body using {@code makeNullParameters} for all six primitive types.
-   * The test passes if no exception is thrown and the instance is non-null.
+   * its constructor body using {@code makeNullParameters} for boolean and the six previously
+   * uncovered primitive types. The test passes if no exception is thrown and the instance is non-null.
    */
   @Test
   public void makeNullParameters_coversAllPrimitiveTypes() {
