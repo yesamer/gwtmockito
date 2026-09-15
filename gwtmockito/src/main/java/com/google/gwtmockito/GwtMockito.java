@@ -193,44 +193,53 @@ public class GwtMockito {
         injectIntoAllTargets(owner, collectOwnerMocks(owner), false);
       }
       return closeable;
+    } catch (ClassCastException castException) {
+      // Mockito 5's TypeBasedCandidateFilter.isCompatibleTypes() casts TypeArguments to Class
+      // without an instanceof guard. When the @InjectMocks target is a class loaded through
+      // GwtMockitoClassLoader with unresolved generic type parameters (TypeVariableImpl),
+      // the cast throws ClassCastException. Recover by injecting manually.
+      if (!hasInjectMocksField(owner)) {
+        throw castException;
+      }
+      return recoverInjection(owner, castException);
     } catch (org.mockito.exceptions.base.MockitoException firstException) {
       if (!firstException.getMessage().contains("there were multiple matching mocks")) {
         throw firstException;
       }
-      // Additional guard: only recover when at least one @InjectMocks target actually extends
-      // a GWT base class. If the ambiguity comes from a plain user class (no GWT base class
-      // in the hierarchy) the exception is a real misconfiguration — rethrow it.
-      if (!hasInjectMocksTargetExtendingGwtBase(owner)) {
-        throw firstException;
-      }
-
-      // At this point:
-      // - All @Mock fields on the owner ARE set (IndependentAnnotationEngine ran first).
-      // - @InjectMocks targets were created and assigned (FieldInitializer ran before
-      //   PropertyAndSetterInjection threw).
-      // - Only the property-injection step failed due to ambiguous inherited GWT fields.
-      //
-      // Step 1: collect the owner's mocks (already created by the failed openMocks call).
-      java.util.Map<String, Object> ownerMocks = collectOwnerMocks(owner);
-
-      // Step 2: for each @InjectMocks target, perform injection:
-      //   - unique-by-type-and-name  →  inject the matching owner mock
-      //   - ambiguous (multiple type-compatible mocks, GWT internal field)  →  fresh placeholder
-      injectIntoAllTargets(owner, ownerMocks, true);
-
-      // Step 3: IndependentAnnotationEngine already set every @Mock/@GwtMock field on the owner
-      // before the injection step threw. Any @MockedStatic or @MockedConstruction instances
-      // (ScopedMock) are now assigned to those fields. The AutoCloseable that would normally
-      // track them was never returned from the failed openMocks() call, so we build a
-      // replacement by scanning the owner's fields for ScopedMock instances and closing them
-      // via closeOnDemand(), exactly as IndependentAnnotationEngine's own lambda would do.
-      java.util.List<org.mockito.ScopedMock> scopedMocks = collectScopedMocks(owner);
-      return () -> {
-        for (org.mockito.ScopedMock sm : scopedMocks) {
-          sm.closeOnDemand();
-        }
-      };
+      return recoverInjection(owner, firstException);
     }
+  }
+
+  /**
+   * Common recovery path for both the TypeVariableImpl ClassCastException and the
+   * "multiple matching mocks" MockitoException.
+   *
+   * At this point all {@code @Mock} fields on the owner ARE already populated
+   * (Mockito's IndependentAnnotationEngine runs before property injection).
+   * We collect those mocks and inject them manually, then build a replacement
+   * AutoCloseable that closes any ScopedMock instances.
+   */
+  private static AutoCloseable recoverInjection(Object owner, RuntimeException cause) {
+    // Step 1: collect the owner's mocks (already created by the failed openMocks call).
+    java.util.Map<String, Object> ownerMocks = collectOwnerMocks(owner);
+
+    // Step 2: for each @InjectMocks target, perform injection:
+    //   - unique-by-type-and-name  →  inject the matching owner mock
+    //   - ambiguous (multiple type-compatible mocks, GWT internal field)  →  fresh placeholder
+    injectIntoAllTargets(owner, ownerMocks, true);
+
+    // Step 3: IndependentAnnotationEngine already set every @Mock/@GwtMock field on the owner
+    // before the injection step threw. Any @MockedStatic or @MockedConstruction instances
+    // (ScopedMock) are now assigned to those fields. The AutoCloseable that would normally
+    // track them was never returned from the failed openMocks() call, so we build a
+    // replacement by scanning the owner's fields for ScopedMock instances and closing them
+    // via closeOnDemand(), exactly as IndependentAnnotationEngine's own lambda would do.
+    java.util.List<org.mockito.ScopedMock> scopedMocks = collectScopedMocks(owner);
+    return () -> {
+      for (org.mockito.ScopedMock sm : scopedMocks) {
+        sm.closeOnDemand();
+      }
+    };
   }
 
   /**
