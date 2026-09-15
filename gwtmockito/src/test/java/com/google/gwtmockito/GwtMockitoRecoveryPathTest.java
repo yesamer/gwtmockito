@@ -107,6 +107,7 @@ public class GwtMockitoRecoveryPathTest {
   public void classCastException_typeVariableImpl_routesToRecoverInjection() throws Exception {
     SimpleOwner owner = new SimpleOwner();
     AutoCloseable mocks = MockitoAnnotations.openMocks(owner);
+    owner.target = null;
 
     // Use the real JVM-produced message so isTypeVariableImplCastException matches it.
     ClassCastException realCce = new ClassCastException(typeVariableImplCCEMessage());
