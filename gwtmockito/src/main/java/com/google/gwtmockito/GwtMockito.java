@@ -197,13 +197,20 @@ public class GwtMockito {
       // Mockito 5's TypeBasedCandidateFilter.isCompatibleTypes() casts TypeArguments to Class
       // without an instanceof guard. When the @InjectMocks target is a class loaded through
       // GwtMockitoClassLoader with unresolved generic type parameters (TypeVariableImpl),
-      // the cast throws ClassCastException. Recover by injecting manually.
+      // the cast throws ClassCastException. Only recover when the owner has an @InjectMocks
+      // field — otherwise this is an unrelated ClassCastException and must propagate.
       if (!hasInjectMocksField(owner)) {
         throw castException;
       }
       return recoverInjection(owner, castException);
     } catch (org.mockito.exceptions.base.MockitoException firstException) {
       if (!firstException.getMessage().contains("there were multiple matching mocks")) {
+        throw firstException;
+      }
+      // Additional guard: only recover when at least one @InjectMocks target actually extends
+      // a GWT base class. If the ambiguity comes from a plain user class (no GWT base class
+      // in the hierarchy) the exception is a real misconfiguration — rethrow it.
+      if (!hasInjectMocksTargetExtendingGwtBase(owner)) {
         throw firstException;
       }
       return recoverInjection(owner, firstException);
