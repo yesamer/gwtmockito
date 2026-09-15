@@ -21,6 +21,8 @@ import static org.junit.Assert.assertTrue;
 import com.google.gwt.user.client.ui.Composite;
 import com.google.gwt.user.client.ui.Widget;
 
+import org.gwtproject.fixture.GwtprojectFixture;
+
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -87,13 +89,17 @@ public class GwtMockitoInternalsTest {
 
   @Test
   public void isGwtBaseClass_recognisesOrgGwtprojectPrefix() throws Exception {
-    // Synthetic test class whose package name starts with "org.gwtproject."
-    // We verify this via a class whose name we control directly.
-    // Since we cannot easily create a real class in that package here, we
-    // verify the negative case: a plain java.lang class must NOT match.
+    // GwtprojectFixture is declared in org.gwtproject.fixture — a real class in the
+    // org.gwtproject.* namespace, so isGwtBaseClass must return true.
+    assertTrue("class in org.gwtproject.* must be a GWT base class",
+        isGwtBaseClass(GwtprojectFixture.class));
+  }
+
+  @Test
+  public void isGwtBaseClass_falseForNonGwtClass() throws Exception {
     assertFalse("java.lang.String must not be a GWT base class",
         isGwtBaseClass(String.class));
-    assertFalse("a test class in com.google.gwtmockito must not be a GWT base class",
+    assertFalse("a class in com.google.gwtmockito must not be a GWT base class",
         isGwtBaseClass(GwtMockitoInternalsTest.class));
   }
 
