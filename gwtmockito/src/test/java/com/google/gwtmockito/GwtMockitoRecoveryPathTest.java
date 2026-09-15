@@ -152,13 +152,13 @@ public class GwtMockitoRecoveryPathTest {
         callIsTypeVariableImplCastException(cce));
   }
 
-  // ── end-to-end: CCE recovery via recoverInjection ─────────────────────────
+  // ── end-to-end: CCE recovery path ─────────────────────────────────────────
   //
-  // Note: the isTypeVariableImplCastException guard cannot be exercised end-to-end
-  // via mockStatic because the JVM fills in the current throw-site stack trace when
-  // mockStatic re-throws a pre-created exception, erasing setStackTrace frames.
-  // The guard is tested via the three predicate unit tests above.
-  // The recovery logic is tested end-to-end by calling recoverInjection directly.
+  // The JVM fills in the stack trace at the `athrow` instruction regardless of
+  // setStackTrace, so mockStatic cannot inject a synthetic stack frame into an
+  // exception it throws. The guard predicate is verified separately above.
+  // The recovery logic is verified here by calling recoverInjection directly,
+  // with target left null so injection is observable.
 
   static class SimpleTarget {
     Object collaborator;
@@ -170,19 +170,23 @@ public class GwtMockitoRecoveryPathTest {
   }
 
   @Test
-  public void recoverInjection_withCCE_injectsCorrectly() throws Exception {
+  public void recoverInjection_withNullTarget_constructsAndInjects() throws Exception {
     SimpleOwner owner = new SimpleOwner();
+    // Populate only the @Mock field — simulates IndependentAnnotationEngine running
+    // before PropertyAndSetterInjection threw, leaving target null.
     AutoCloseable mocks = MockitoAnnotations.openMocks(owner);
+    owner.target = null;
+
+    Method recoverInjection = GwtMockito.class.getDeclaredMethod(
+        "recoverInjection", Object.class, RuntimeException.class);
+    recoverInjection.setAccessible(true);
     try {
-      Method recoverInjection = GwtMockito.class.getDeclaredMethod(
-          "recoverInjection", Object.class, RuntimeException.class);
-      recoverInjection.setAccessible(true);
       AutoCloseable closeable = (AutoCloseable) recoverInjection.invoke(
           null, owner, realTypeVariableImplCce());
 
       assertNotNull("recoverInjection must return a non-null closeable", closeable);
-      assertNotNull("target must have been constructed", owner.target);
-      assertSame("collaborator must be injected by name",
+      assertNotNull("recoverInjection must construct the null target", owner.target);
+      assertSame("recoverInjection must inject collaborator by name",
           owner.collaborator, owner.target.collaborator);
       closeable.close();
     } finally {
