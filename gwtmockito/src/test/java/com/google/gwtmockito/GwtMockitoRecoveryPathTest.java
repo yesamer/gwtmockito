@@ -85,20 +85,33 @@ public class GwtMockitoRecoveryPathTest {
     @InjectMocks SimpleTarget target;
   }
 
-  /** Owner with no @InjectMocks field — a CCE here is unrelated and must propagate. */
-  static class NoInjectMocksOwner {
-    @Mock Object mock;
+  /**
+   * Produces the exact CCE message that Mockito 5's TypeBasedCandidateFilter emits
+   * when it casts a TypeVariableImpl to Class without an instanceof guard.
+   * Verified by probing the JVM: casting a TypeVariable field's generic type to Class
+   * always produces a message containing "TypeVariableImpl".
+   */
+  private static String typeVariableImplCCEMessage() throws Exception {
+    java.lang.reflect.Type tv =
+        SimpleOwner.class.getDeclaredField("collaborator").getGenericType();
+    // collaborator is declared as Object, not a type variable — get one from a generic class
+    // by using the Base<P> pattern from GwtMockitoTypeVariableInjectionTest.
+    tv = com.google.gwtmockito.GwtMockitoTypeVariableInjectionTest.BaseView.class
+        .getDeclaredField("presenter").getGenericType();
+    try { @SuppressWarnings("unused") Class<?> c = (Class<?>) tv; }
+    catch (ClassCastException e) { return e.getMessage(); }
+    throw new AssertionError("expected CCE was not thrown");
   }
 
   @Test
-  public void classCastException_withInjectMocks_routesToRecoverInjection() throws Exception {
+  public void classCastException_typeVariableImpl_routesToRecoverInjection() throws Exception {
     SimpleOwner owner = new SimpleOwner();
-    // Pre-populate @Mock fields so recoverInjection can find them.
     AutoCloseable mocks = MockitoAnnotations.openMocks(owner);
 
+    // Use the real JVM-produced message so isTypeVariableImplCastException matches it.
+    ClassCastException realCce = new ClassCastException(typeVariableImplCCEMessage());
     try (MockedStatic<MockitoAnnotations> mockedStatic = mockStatic(MockitoAnnotations.class)) {
-      mockedStatic.when(() -> MockitoAnnotations.openMocks(owner))
-          .thenThrow(new ClassCastException("simulated TypeVariableImpl CCE"));
+      mockedStatic.when(() -> MockitoAnnotations.openMocks(owner)).thenThrow(realCce);
 
       GwtMockito.initMocks(new Object()); // open bridge
       AutoCloseable closeable = callOpenMocksWithObjectFieldFix(owner);
@@ -115,20 +128,21 @@ public class GwtMockitoRecoveryPathTest {
   }
 
   @Test
-  public void classCastException_withoutInjectMocks_isRethrown() throws Exception {
-    NoInjectMocksOwner owner = new NoInjectMocksOwner();
+  public void classCastException_unrelated_isRethrown() throws Exception {
+    SimpleOwner owner = new SimpleOwner();
     AutoCloseable mocks = MockitoAnnotations.openMocks(owner);
 
-    ClassCastException cce = new ClassCastException("unrelated CCE");
+    // A CCE whose message does NOT contain "TypeVariableImpl" must propagate unchanged.
+    ClassCastException unrelated = new ClassCastException("String cannot be cast to Integer");
     try (MockedStatic<MockitoAnnotations> mockedStatic = mockStatic(MockitoAnnotations.class)) {
-      mockedStatic.when(() -> MockitoAnnotations.openMocks(owner)).thenThrow(cce);
+      mockedStatic.when(() -> MockitoAnnotations.openMocks(owner)).thenThrow(unrelated);
 
       GwtMockito.initMocks(new Object()); // open bridge
       try {
         callOpenMocksWithObjectFieldFix(owner);
-        fail("Expected ClassCastException to propagate when there is no @InjectMocks field");
+        fail("Expected unrelated ClassCastException to propagate");
       } catch (ClassCastException e) {
-        if (e != cce) {
+        if (e != unrelated) {
           fail("A different exception was thrown: " + e);
         }
       }
@@ -263,10 +277,10 @@ public class GwtMockitoRecoveryPathTest {
     f.setAccessible(true);
     f.set(owner, scopedSpy);
 
-    // Make openMocks throw ClassCastException so recoverInjection runs and collects scopedSpy.
+    // Make openMocks throw the TypeVariableImpl CCE so recoverInjection runs and collects scopedSpy.
     try (MockedStatic<MockitoAnnotations> mockedStatic = mockStatic(MockitoAnnotations.class)) {
       mockedStatic.when(() -> MockitoAnnotations.openMocks(owner))
-          .thenThrow(new ClassCastException("simulated CCE with ScopedMock"));
+          .thenThrow(new ClassCastException(typeVariableImplCCEMessage()));
 
       GwtMockito.initMocks(new Object()); // open bridge
       AutoCloseable closeable = callOpenMocksWithObjectFieldFix(owner);

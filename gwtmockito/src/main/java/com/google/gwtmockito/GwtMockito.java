@@ -197,9 +197,9 @@ public class GwtMockito {
       // Mockito 5's TypeBasedCandidateFilter.isCompatibleTypes() casts TypeArguments to Class
       // without an instanceof guard. When the @InjectMocks target is a class loaded through
       // GwtMockitoClassLoader with unresolved generic type parameters (TypeVariableImpl),
-      // the cast throws ClassCastException. Only recover when the owner has an @InjectMocks
-      // field — otherwise this is an unrelated ClassCastException and must propagate.
-      if (!hasInjectMocksField(owner)) {
+      // the cast throws ClassCastException whose message always contains "TypeVariableImpl".
+      // Any other ClassCastException is unrelated to this bug and must propagate.
+      if (!isTypeVariableImplCastException(castException)) {
         throw castException;
       }
       return recoverInjection(owner, castException);
@@ -550,6 +550,19 @@ public class GwtMockito {
           + "register a provider before calling getFake.");
     }
     return fake;
+  }
+
+  /**
+   * Returns true when {@code e} originates from Mockito 5's
+   * {@code TypeBasedCandidateFilter.isCompatibleTypes()} casting a
+   * {@code sun.reflect.generics.reflectiveObjects.TypeVariableImpl} to {@link Class}.
+   * The JVM always uses the same internal {@code TypeVariableImpl} class from
+   * {@code java.base} regardless of which classloader loaded the user class, so the
+   * message is stable across standard and Javassist classloaders.
+   */
+  private static boolean isTypeVariableImplCastException(ClassCastException e) {
+    String msg = e.getMessage();
+    return msg != null && msg.contains("TypeVariableImpl");
   }
 
   /** Returns true when {@code clazz} is a GWT framework class (not user code). */
