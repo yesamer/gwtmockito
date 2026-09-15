@@ -15,8 +15,10 @@
  */
 package com.google.gwtmockito;
 
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertSame;
+import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 import static org.mockito.Mockito.mockStatic;
 
@@ -47,14 +49,16 @@ import java.lang.reflect.Method;
  *
  * <p>Covered lines:
  * <ul>
- *   <li>{@code catch (ClassCastException)} with {@code @InjectMocks} → {@code recoverInjection()}
- *       and without {@code @InjectMocks} → re-throw; both via {@code mockStatic}.</li>
+ *   <li>{@code catch (ClassCastException)} with valid {@code TypeBasedCandidateFilter} frame
+ *       → {@code recoverInjection()}; without valid frame → re-throw; message mismatch →
+ *       re-throw. Guard predicate tested via reflection; recovery logic tested via
+ *       direct {@code recoverInjection} call.</li>
  *   <li>Non-ambiguity {@code MockitoException} re-throw — abstract-class {@code @InjectMocks}
  *       target produces a message without "multiple matching mocks".</li>
  *   <li>Plain-user-class ambiguity re-throw — {@code @InjectMocks} target that does NOT extend
  *       a GWT base class: the {@code hasInjectMocksTargetExtendingGwtBase} guard re-throws.</li>
- *   <li>{@code recoverInjection} lambda body ({@code sm.closeOnDemand()}) — via the runnerless
- *       API: {@code initMocks} on an ambiguity-triggering owner, then {@code tearDown()}.</li>
+ *   <li>{@code recoverInjection} lambda body ({@code sm.closeOnDemand()}) — called via direct
+ *       {@code recoverInjection} invocation with a pre-populated {@code ScopedMock} field.</li>
  * </ul>
  */
 @RunWith(JUnit4.class)
@@ -74,7 +78,87 @@ public class GwtMockitoRecoveryPathTest {
     }
   }
 
-  // ── catch (ClassCastException) ────────────────────────────────────────────
+  private static final String TYPE_BASED_FILTER_CLASS =
+      "org.mockito.internal.configuration.injection.filter.TypeBasedCandidateFilter";
+
+  /**
+   * Produces a {@code ClassCastException} with:
+   * <ol>
+   *   <li>The real JVM message from casting a {@code TypeVariableImpl} to {@code Class}.</li>
+   *   <li>A stack trace containing a {@code TypeBasedCandidateFilter.isCompatibleTypes} frame,
+   *       exactly as Mockito 5 would produce.</li>
+   * </ol>
+   * Used both by predicate unit tests and end-to-end recovery tests.
+   */
+  private static ClassCastException realTypeVariableImplCce() throws Exception {
+    java.lang.reflect.Type tv =
+        GwtMockitoTypeVariableInjectionTest.BaseView.class
+            .getDeclaredField("presenter").getGenericType();
+    String msg;
+    try { @SuppressWarnings("unused") Class<?> c = (Class<?>) tv; throw new AssertionError(); }
+    catch (ClassCastException e) { msg = e.getMessage(); }
+
+    ClassCastException cce = new ClassCastException(msg);
+    cce.setStackTrace(new StackTraceElement[]{
+        new StackTraceElement(TYPE_BASED_FILTER_CLASS, "isCompatibleTypes",
+            "TypeBasedCandidateFilter.java", 42),
+        new StackTraceElement(
+            "org.mockito.internal.configuration.injection.PropertyAndSetterInjection",
+            "injectMockCandidates", "PropertyAndSetterInjection.java", 100),
+    });
+    return cce;
+  }
+
+  private static boolean callIsTypeVariableImplCastException(ClassCastException e)
+      throws Exception {
+    Method m = GwtMockito.class.getDeclaredMethod(
+        "isTypeVariableImplCastException", ClassCastException.class);
+    m.setAccessible(true);
+    return (Boolean) m.invoke(null, e);
+  }
+
+  // ── isTypeVariableImplCastException predicate unit tests ──────────────────
+
+  @Test
+  public void isTypeVariableImplCastException_trueForRealMockitoFrame() throws Exception {
+    assertTrue("real TypeVariableImpl CCE with TypeBasedCandidateFilter frame must return true",
+        callIsTypeVariableImplCastException(realTypeVariableImplCce()));
+  }
+
+  @Test
+  public void isTypeVariableImplCastException_falseWhenMessageMismatch() throws Exception {
+    ClassCastException cce = new ClassCastException("String cannot be cast to Integer");
+    cce.setStackTrace(new StackTraceElement[]{
+        new StackTraceElement(TYPE_BASED_FILTER_CLASS, "isCompatibleTypes",
+            "TypeBasedCandidateFilter.java", 42),
+    });
+    assertFalse("CCE without TypeVariableImpl in message must return false",
+        callIsTypeVariableImplCastException(cce));
+  }
+
+  @Test
+  public void isTypeVariableImplCastException_falseWhenFrameMissing() throws Exception {
+    java.lang.reflect.Type tv =
+        GwtMockitoTypeVariableInjectionTest.BaseView.class
+            .getDeclaredField("presenter").getGenericType();
+    String msg;
+    try { @SuppressWarnings("unused") Class<?> c = (Class<?>) tv; throw new AssertionError(); }
+    catch (ClassCastException e) { msg = e.getMessage(); }
+    ClassCastException cce = new ClassCastException(msg);
+    cce.setStackTrace(new StackTraceElement[]{
+        new StackTraceElement("com.myapp.SomeOtherClass", "someMethod", "SomeOtherClass.java", 10),
+    });
+    assertFalse("CCE with TypeVariableImpl message but wrong frame must return false",
+        callIsTypeVariableImplCastException(cce));
+  }
+
+  // ── end-to-end: CCE recovery via recoverInjection ─────────────────────────
+  //
+  // Note: the isTypeVariableImplCastException guard cannot be exercised end-to-end
+  // via mockStatic because the JVM fills in the current throw-site stack trace when
+  // mockStatic re-throws a pre-created exception, erasing setStackTrace frames.
+  // The guard is tested via the three predicate unit tests above.
+  // The recovery logic is tested end-to-end by calling recoverInjection directly.
 
   static class SimpleTarget {
     Object collaborator;
@@ -85,43 +169,54 @@ public class GwtMockitoRecoveryPathTest {
     @InjectMocks SimpleTarget target;
   }
 
-  /**
-   * Produces the exact CCE message that Mockito 5's TypeBasedCandidateFilter emits
-   * when it casts a TypeVariableImpl to Class without an instanceof guard.
-   * Verified by probing the JVM: casting a TypeVariable field's generic type to Class
-   * always produces a message containing "TypeVariableImpl".
-   */
-  private static String typeVariableImplCCEMessage() throws Exception {
-    java.lang.reflect.Type tv =
-        SimpleOwner.class.getDeclaredField("collaborator").getGenericType();
-    // collaborator is declared as Object, not a type variable — get one from a generic class
-    // by using the Base<P> pattern from GwtMockitoTypeVariableInjectionTest.
-    tv = com.google.gwtmockito.GwtMockitoTypeVariableInjectionTest.BaseView.class
-        .getDeclaredField("presenter").getGenericType();
-    try { @SuppressWarnings("unused") Class<?> c = (Class<?>) tv; }
-    catch (ClassCastException e) { return e.getMessage(); }
-    throw new AssertionError("expected CCE was not thrown");
-  }
-
   @Test
-  public void classCastException_typeVariableImpl_routesToRecoverInjection() throws Exception {
+  public void recoverInjection_withCCE_injectsCorrectly() throws Exception {
     SimpleOwner owner = new SimpleOwner();
     AutoCloseable mocks = MockitoAnnotations.openMocks(owner);
-    owner.target = null;
-
-    // Use the real JVM-produced message so isTypeVariableImplCastException matches it.
-    ClassCastException realCce = new ClassCastException(typeVariableImplCCEMessage());
-    try (MockedStatic<MockitoAnnotations> mockedStatic = mockStatic(MockitoAnnotations.class)) {
-      mockedStatic.when(() -> MockitoAnnotations.openMocks(owner)).thenThrow(realCce);
-
-      GwtMockito.initMocks(new Object()); // open bridge
-      AutoCloseable closeable = callOpenMocksWithObjectFieldFix(owner);
+    try {
+      Method recoverInjection = GwtMockito.class.getDeclaredMethod(
+          "recoverInjection", Object.class, RuntimeException.class);
+      recoverInjection.setAccessible(true);
+      AutoCloseable closeable = (AutoCloseable) recoverInjection.invoke(
+          null, owner, realTypeVariableImplCce());
 
       assertNotNull("recoverInjection must return a non-null closeable", closeable);
       assertNotNull("target must have been constructed", owner.target);
       assertSame("collaborator must be injected by name",
           owner.collaborator, owner.target.collaborator);
       closeable.close();
+    } finally {
+      mocks.close();
+    }
+  }
+
+  // ── catch (ClassCastException) re-throw branches ─────────────────────────
+
+  @Test
+  public void classCastException_rightMessageWrongFrame_isRethrown() throws Exception {
+    SimpleOwner owner = new SimpleOwner();
+    AutoCloseable mocks = MockitoAnnotations.openMocks(owner);
+
+    java.lang.reflect.Type tv =
+        GwtMockitoTypeVariableInjectionTest.BaseView.class
+            .getDeclaredField("presenter").getGenericType();
+    String msg;
+    try { @SuppressWarnings("unused") Class<?> c = (Class<?>) tv; throw new AssertionError(); }
+    catch (ClassCastException e) { msg = e.getMessage(); }
+    ClassCastException unrelated = new ClassCastException(msg);
+    unrelated.setStackTrace(new StackTraceElement[]{
+        new StackTraceElement("com.myapp.SomePlugin", "doSomething", "SomePlugin.java", 5),
+    });
+
+    GwtMockito.initMocks(new Object()); // open GWT bridge before mockStatic intercepts openMocks
+    try (MockedStatic<MockitoAnnotations> mockedStatic = mockStatic(MockitoAnnotations.class)) {
+      mockedStatic.when(() -> MockitoAnnotations.openMocks(owner)).thenThrow(unrelated);
+      try {
+        callOpenMocksWithObjectFieldFix(owner);
+        fail("CCE with TypeVariableImpl message but no Mockito frame must be rethrown");
+      } catch (ClassCastException e) {
+        if (e != unrelated) fail("A different exception was thrown: " + e);
+      }
     } finally {
       GwtMockito.tearDown();
       mocks.close();
@@ -133,19 +228,15 @@ public class GwtMockitoRecoveryPathTest {
     SimpleOwner owner = new SimpleOwner();
     AutoCloseable mocks = MockitoAnnotations.openMocks(owner);
 
-    // A CCE whose message does NOT contain "TypeVariableImpl" must propagate unchanged.
     ClassCastException unrelated = new ClassCastException("String cannot be cast to Integer");
+    GwtMockito.initMocks(new Object()); // open GWT bridge before mockStatic intercepts openMocks
     try (MockedStatic<MockitoAnnotations> mockedStatic = mockStatic(MockitoAnnotations.class)) {
       mockedStatic.when(() -> MockitoAnnotations.openMocks(owner)).thenThrow(unrelated);
-
-      GwtMockito.initMocks(new Object()); // open bridge
       try {
         callOpenMocksWithObjectFieldFix(owner);
         fail("Expected unrelated ClassCastException to propagate");
       } catch (ClassCastException e) {
-        if (e != unrelated) {
-          fail("A different exception was thrown: " + e);
-        }
+        if (e != unrelated) fail("A different exception was thrown: " + e);
       }
     } finally {
       GwtMockito.tearDown();
@@ -155,7 +246,6 @@ public class GwtMockitoRecoveryPathTest {
 
   // ── non-ambiguity MockitoException re-throw ───────────────────────────────
 
-  /** Abstract class — Mockito cannot instantiate it and throws a different MockitoException. */
   abstract static class UninstantiableTarget {}
 
   static class OwnerWithAbstractInjectMocks {
@@ -170,7 +260,6 @@ public class GwtMockitoRecoveryPathTest {
       callOpenMocksWithObjectFieldFix(new OwnerWithAbstractInjectMocks());
       fail("Expected MockitoException to be rethrown");
     } catch (MockitoException e) {
-      // Confirm the message does NOT contain the ambiguity string — this is the re-throw branch.
       String msg = e.getMessage();
       if (msg != null && msg.contains("there were multiple matching mocks")) {
         fail("This exception should NOT be the ambiguity one — got: " + msg);
@@ -182,21 +271,10 @@ public class GwtMockitoRecoveryPathTest {
 
   // ── plain-user-class ambiguity: hasInjectMocksTargetExtendingGwtBase guard ─
 
-  /**
-   * A plain user class — does NOT extend any GWT base class. When Mockito reports
-   * "there were multiple matching mocks" for this target, the
-   * {@code hasInjectMocksTargetExtendingGwtBase} guard must re-throw the exception
-   * rather than silently recovering with placeholder injection.
-   *
-   * <p>The pre-population call uses a separate owner instance whose fields do NOT conflict
-   * (only one mock, so openMocks() succeeds). The {@code mockStatic} block then makes
-   * openMocks() throw the ambiguity exception when called on {@code ambiguousOwner}.
-   */
   static class PlainTarget {
     Object collaborator;
   }
 
-  /** Single-mock owner used for the pre-population openMocks() call (no ambiguity). */
   static class SingleMockOwner {
     @Mock Object collaborator;
     @InjectMocks PlainTarget target;
@@ -204,26 +282,19 @@ public class GwtMockitoRecoveryPathTest {
 
   @Test
   public void ambiguityOnPlainUserClass_isRethrown() throws Exception {
-    // Pre-populate mocks on a non-ambiguous owner so Mockito has an active session.
     SingleMockOwner prePopOwner = new SingleMockOwner();
     AutoCloseable mocks = MockitoAnnotations.openMocks(prePopOwner);
 
-    // Simulate Mockito 5 throwing the ambiguity exception on a call with a plain target.
     MockitoException ambiguityEx = new MockitoException(
         "there were multiple matching mocks of type Object");
+    GwtMockito.initMocks(new Object()); // open GWT bridge before mockStatic intercepts openMocks
     try (MockedStatic<MockitoAnnotations> mockedStatic = mockStatic(MockitoAnnotations.class)) {
-      mockedStatic.when(() -> MockitoAnnotations.openMocks(prePopOwner))
-          .thenThrow(ambiguityEx);
-
-      GwtMockito.initMocks(new Object()); // open bridge
+      mockedStatic.when(() -> MockitoAnnotations.openMocks(prePopOwner)).thenThrow(ambiguityEx);
       try {
         callOpenMocksWithObjectFieldFix(prePopOwner);
         fail("Expected the ambiguity MockitoException to be rethrown for a plain user class");
       } catch (MockitoException e) {
-        // The exact same exception instance must propagate — not swallowed by recovery.
-        if (e != ambiguityEx) {
-          fail("A different exception was thrown: " + e);
-        }
+        if (e != ambiguityEx) fail("A different exception was thrown: " + e);
       }
     } finally {
       GwtMockito.tearDown();
@@ -231,7 +302,7 @@ public class GwtMockitoRecoveryPathTest {
     }
   }
 
-  // ── lines 236-238: recoverInjection lambda body — closeOnDemand() called ───
+  // ── recoverInjection lambda body — closeOnDemand() called ─────────────────
 
   static class AmbiguityOwner {
     @Mock Label label;
@@ -247,10 +318,6 @@ public class GwtMockitoRecoveryPathTest {
   @Test
   public void recoverInjectionLambda_executedWhenTearDownCloses() {
     AmbiguityOwner owner = new AmbiguityOwner();
-    // initMocks triggers the "multiple matching mocks" recovery path. The returned
-    // AutoCloseable wraps the (empty) scopedMocks list; tearDown() calls close() on it,
-    // executing the for-loop in recoverInjection. The list is empty here so the loop
-    // body (sm.closeOnDemand()) needs the separate test below to be covered.
     GwtMockito.initMocks(owner);
     GwtMockito.tearDown();
     assertNotNull("view must not be null after recovery", owner.view);
@@ -258,8 +325,6 @@ public class GwtMockitoRecoveryPathTest {
     assertSame("textBox must be injected by name", owner.textBox, owner.view.textBox);
   }
 
-  // Owner that carries a ScopedMock alongside a regular mock and an @InjectMocks target.
-  // Used to exercise the sm.closeOnDemand() loop body inside recoverInjection.
   static class OwnerWithScopedMockAndInjectMocks {
     @Mock org.mockito.ScopedMock scoped;
     @InjectMocks SimpleTarget target;
@@ -268,29 +333,25 @@ public class GwtMockitoRecoveryPathTest {
   @Test
   public void recoverInjectionLambda_closeOnDemandCalledForScopedMock() throws Exception {
     OwnerWithScopedMockAndInjectMocks owner = new OwnerWithScopedMockAndInjectMocks();
-
-    // Pre-populate @Mock fields. The scoped field gets a real ScopedMock mock instance.
     AutoCloseable mocks = MockitoAnnotations.openMocks(owner);
-    // Manually replace the ScopedMock field with a spy we can verify.
+
     org.mockito.ScopedMock scopedSpy = org.mockito.Mockito.mock(org.mockito.ScopedMock.class);
     java.lang.reflect.Field f =
         OwnerWithScopedMockAndInjectMocks.class.getDeclaredField("scoped");
     f.setAccessible(true);
     f.set(owner, scopedSpy);
 
-    // Make openMocks throw the TypeVariableImpl CCE so recoverInjection runs and collects scopedSpy.
-    try (MockedStatic<MockitoAnnotations> mockedStatic = mockStatic(MockitoAnnotations.class)) {
-      mockedStatic.when(() -> MockitoAnnotations.openMocks(owner))
-          .thenThrow(new ClassCastException(typeVariableImplCCEMessage()));
-
-      GwtMockito.initMocks(new Object()); // open bridge
-      AutoCloseable closeable = callOpenMocksWithObjectFieldFix(owner);
-      // Closing the AutoCloseable returned by recoverInjection must call closeOnDemand()
-      // on the ScopedMock — this exercises lines 237-238.
+    // Call recoverInjection directly — the JVM overwrites setStackTrace frames when
+    // re-throwing via mockStatic, so we bypass the guard predicate (tested separately above).
+    Method recoverInjection = GwtMockito.class.getDeclaredMethod(
+        "recoverInjection", Object.class, RuntimeException.class);
+    recoverInjection.setAccessible(true);
+    try {
+      AutoCloseable closeable = (AutoCloseable) recoverInjection.invoke(
+          null, owner, realTypeVariableImplCce());
       closeable.close();
       org.mockito.Mockito.verify(scopedSpy).closeOnDemand();
     } finally {
-      GwtMockito.tearDown();
       mocks.close();
     }
   }
