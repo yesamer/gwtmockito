@@ -273,7 +273,7 @@ public class GwtMockitoRecoveryPathTest {
     }
   }
 
-  // ── plain-user-class ambiguity: hasInjectMocksTargetExtendingGwtBase guard ─
+  // ── plain-user-class ambiguity: recovery applies regardless of target type ──
 
   static class PlainTarget {
     Object collaborator;
@@ -285,7 +285,10 @@ public class GwtMockitoRecoveryPathTest {
   }
 
   @Test
-  public void ambiguityOnPlainUserClass_isRethrown() throws Exception {
+  public void ambiguityOnPlainUserClass_isRecovered() throws Exception {
+    // The hasInjectMocksTargetExtendingGwtBase guard has been removed.
+    // recoverInjection() now runs for any "there were multiple matching mocks"
+    // exception, regardless of whether the target extends a GWT base class.
     SingleMockOwner prePopOwner = new SingleMockOwner();
     AutoCloseable mocks = MockitoAnnotations.openMocks(prePopOwner);
 
@@ -294,12 +297,8 @@ public class GwtMockitoRecoveryPathTest {
     GwtMockito.initMocks(new Object()); // open GWT bridge before mockStatic intercepts openMocks
     try (MockedStatic<MockitoAnnotations> mockedStatic = mockStatic(MockitoAnnotations.class)) {
       mockedStatic.when(() -> MockitoAnnotations.openMocks(prePopOwner)).thenThrow(ambiguityEx);
-      try {
-        callOpenMocksWithObjectFieldFix(prePopOwner);
-        fail("Expected the ambiguity MockitoException to be rethrown for a plain user class");
-      } catch (MockitoException e) {
-        if (e != ambiguityEx) fail("A different exception was thrown: " + e);
-      }
+      // Should not throw — recovery path handles it
+      callOpenMocksWithObjectFieldFix(prePopOwner);
     } finally {
       GwtMockito.tearDown();
       mocks.close();
