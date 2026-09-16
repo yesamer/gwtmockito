@@ -207,12 +207,6 @@ public class GwtMockito {
       if (!firstException.getMessage().contains("there were multiple matching mocks")) {
         throw firstException;
       }
-      // Additional guard: only recover when at least one @InjectMocks target actually extends
-      // a GWT base class. If the ambiguity comes from a plain user class (no GWT base class
-      // in the hierarchy) the exception is a real misconfiguration — rethrow it.
-      if (!hasInjectMocksTargetExtendingGwtBase(owner)) {
-        throw firstException;
-      }
       return recoverInjection(owner, firstException);
     }
   }
